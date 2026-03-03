@@ -11,52 +11,107 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 - **Self-healing listener**: Automatic stale PID/lock cleanup and restart.
 - **Cross-platform**: Works on Windows (msvcrt) and POSIX (fcntl).
 
+## Prerequisites
+
+- **Python 3.11+**
+- **Telegram bot token** -- create one via [@BotFather](https://t.me/BotFather)
+- **Telegram chat ID** -- send any message to your bot, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and look for `"chat":{"id": ...}`
+
 ## Installation
 
 ```bash
-# From local clone
+# From GitHub
+pip install git+https://github.com/hyper-tew/telegram-mcp-notify.git
+
+# From a local clone
 pip install ./telegram-mcp-notify
 
-# From git
-pip install git+https://github.com/USER/telegram-mcp-notify.git
-
-# Development
+# Development (editable + test deps)
 pip install -e "./telegram-mcp-notify[dev]"
 ```
 
-## Setup
+After installation the `telegram-mcp-notify` command is available on your `PATH`.
 
-1. Create a Telegram bot via [@BotFather](https://t.me/BotFather) and get the bot token.
-2. Get your chat ID (send a message to the bot, then check `https://api.telegram.org/bot<TOKEN>/getUpdates`).
-3. Set environment variables:
+## Setup -- Cursor
 
-```bash
-export TELEGRAM_BOT_TOKEN="your-bot-token"
-export TELEGRAM_CHAT_ID="your-chat-id"
-```
+Create or edit the MCP configuration file and put your Telegram credentials in the `env` block.
 
-## MCP Configuration
-
-### Cursor (`.mcp.json` or `.cursor/mcp.json`)
+**Project-level** -- `.cursor/mcp.json` in your project root (applies to that project only):
 
 ```json
 {
   "mcpServers": {
     "telegram_notify": {
       "command": "telegram-mcp-notify",
-      "args": []
+      "args": [],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
+        "TELEGRAM_CHAT_ID": "123456789"
+      }
     }
   }
 }
 ```
 
-### Codex (`~/.codex/config.toml`)
+**Global** -- `~/.cursor/mcp.json` (applies to all projects):
+
+Same JSON structure as above.
+
+> **Note:** Restart Cursor after editing the MCP configuration for changes to take effect.
+
+## Setup -- Codex
+
+Add the server to your Codex `config.toml` with credentials in the `[mcp_servers.telegram_notify.env]` table.
+
+**Global** -- `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.telegram_notify]
 command = "telegram-mcp-notify"
 args = []
+
+[mcp_servers.telegram_notify.env]
+TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
+TELEGRAM_CHAT_ID = "123456789"
 ```
+
+**Project-scoped** -- `.codex/config.toml` in your project root (trusted projects only). Same TOML structure as above.
+
+**CLI shortcut** -- you can also add the server from the terminal:
+
+```bash
+codex mcp add telegram_notify \
+  --env TELEGRAM_BOT_TOKEN=123456:ABC-DEF... \
+  --env TELEGRAM_CHAT_ID=123456789 \
+  -- telegram-mcp-notify
+```
+
+## Optional Configuration
+
+You can pass additional environment variables in the same `env` block alongside the required ones.
+
+**Cursor** (inside the `"env"` object):
+
+```json
+{
+  "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
+  "TELEGRAM_CHAT_ID": "123456789",
+  "TELEGRAM_PARSE_MODE": "HTML",
+  "TELEGRAM_TIMEOUT_SECONDS": "15"
+}
+```
+
+**Codex** (under `[mcp_servers.telegram_notify.env]`):
+
+```toml
+[mcp_servers.telegram_notify.env]
+TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
+TELEGRAM_CHAT_ID = "123456789"
+TELEGRAM_PARSE_MODE = "HTML"
+TELEGRAM_TIMEOUT_SECONDS = "15"
+```
+
+See the full list of variables in the [Environment Variables](#environment-variables) table below.
 
 ## Available Tools
 
@@ -66,7 +121,7 @@ args = []
 |------|-------------|
 | `send_telegram_notification` | Send structured notification (event, message, task_name) |
 
-### High-Level Input Tools (New)
+### High-Level Input Tools
 
 | Tool | Description |
 |------|-------------|
@@ -104,6 +159,26 @@ args = []
 | `TELEGRAM_INBOX_DB_PATH` | No | `~/.telegram-mcp-notify/inbox.db` | SQLite inbox path |
 | `TELEGRAM_LISTENER_LOG_PATH` | No | `~/.telegram-mcp-notify/listener.log` | Listener log path |
 | `TELEGRAM_SINGLETON_LOCK_DIR` | No | `~/.telegram-mcp-notify/locks/` | Lock file directory |
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| No notifications received | Bot token or chat ID wrong | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
+| Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `repair_telegram_listener` |
+| "stale_lock" health reason | Previous listener crashed | Call `repair_telegram_listener(restart=true)` |
+| "heartbeat_stale" | Listener froze or network issue | Call `repair_telegram_listener(restart=true)` |
+| Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |
+| Inline button not responding | Callback not matched | Ensure listener is running via `telegram_listener_health` |
+
+## Data Paths
+
+All data defaults to `~/.telegram-mcp-notify/`:
+- `inbox.db` -- SQLite inbox database
+- `listener.log` -- Listener log file
+- `locks/` -- Singleton lock files
+
+Override with environment variables: `TELEGRAM_INBOX_DB_PATH`, `TELEGRAM_LISTENER_LOG_PATH`, `TELEGRAM_SINGLETON_LOCK_DIR`.
 
 ## License
 
