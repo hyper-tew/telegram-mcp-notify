@@ -1,0 +1,19 @@
+name: telegram-notify
+description: Send Telegram notifications and collect user input through the telegram_notify MCP server.
+instructions: SKILL.md
+dependencies:
+  mcp_tools:
+    - telegram_notify:send_telegram_notification
+    - telegram_notify:ask_user
+    - telegram_notify:ask_user_confirmation
+    - telegram_notify:ask_user_choice
+    - telegram_notify:register_pending_prompt
+    - telegram_notify:check_pending_prompt
+    - telegram_notify:wait_pending_prompt
+    - telegram_notify:list_pending_prompts
+    - telegram_notify:cancel_prompt
+    - telegram_notify:get_recent_messages
+    - telegram_notify:telegram_listener_health
+    - telegram_notify:start_telegram_listener
+    - telegram_notify:repair_telegram_listener
+    - telegram_notify:telegram_notify_capabilities

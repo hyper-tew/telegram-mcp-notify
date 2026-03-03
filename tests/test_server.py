@@ -311,3 +311,63 @@ def test_repair_telegram_listener_restart_returns_after_snapshot(monkeypatch, tm
     assert result["ok"] is True
     assert "removed_stale_lock" in result["actions_taken"]
     assert "restart_attempted" in result["actions_taken"]
+
+
+def test_wait_pending_prompt_resolves_after_retry(monkeypatch) -> None:
+    responses = iter(
+        (
+            {"ok": True, "status": "waiting", "prompt_id": "p1"},
+            {"ok": True, "status": "resolved", "prompt_id": "p1", "response_text": "ok"},
+        )
+    )
+    calls: list[tuple[str, str, bool, str | None]] = []
+
+    def _fake_check(session_id: str, prompt_id: str, consume: bool = False, db_path: str | None = None):
+        calls.append((session_id, prompt_id, consume, db_path))
+        return dict(next(responses))
+
+    monkeypatch.setattr(server, "check_pending_prompt", _fake_check)
+    monkeypatch.setattr(server.time, "sleep", lambda _seconds: None)
+
+    result = server.wait_pending_prompt(
+        session_id="session-wait",
+        prompt_id="p1",
+        timeout_seconds=5,
+        poll_interval_seconds=0.1,
+        consume=True,
+        db_path=None,
+    )
+    assert result["ok"] is True
+    assert result["timed_out"] is False
+    assert result["status"] == "resolved"
+    assert result["poll_count"] == 2
+    assert all(call[2] is True for call in calls)
+
+
+def test_wait_pending_prompt_times_out(monkeypatch) -> None:
+    monkeypatch.setattr(
+        server,
+        "check_pending_prompt",
+        lambda **_kwargs: {"ok": True, "status": "waiting", "prompt_id": "p-timeout"},
+    )
+
+    result = server.wait_pending_prompt(
+        session_id="session-timeout",
+        prompt_id="p-timeout",
+        timeout_seconds=0,
+        poll_interval_seconds=0.1,
+        consume=True,
+    )
+    assert result["ok"] is True
+    assert result["status"] == "waiting"
+    assert result["timed_out"] is True
+    assert result["poll_count"] == 1
+
+
+def test_telegram_notify_capabilities_includes_new_tools() -> None:
+    result = server.telegram_notify_capabilities()
+    assert result["ok"] is True
+    assert "wait_pending_prompt" in result["tools"]
+    assert "telegram_notify_capabilities" in result["tools"]
+    assert result["tool_count"] == len(result["tools"])
+    assert result["supports"]["sync_wait_for_prompt"] is True

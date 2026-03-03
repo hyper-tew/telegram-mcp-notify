@@ -21,6 +21,34 @@ triggers:
 
 Manage Telegram notifications and bidirectional user input through the `telegram_notify` MCP server.
 
+## Runtime Capability Gate (Mandatory)
+
+Before claiming this skill is running in input/listener mode, verify what tools are actually available in the current runtime.
+
+- Preferred preflight: call `telegram_notify_capabilities` when available.
+- Notify-only mode requires: `send_telegram_notification`.
+- Input mode requires one of:
+  - High-level flow: `ask_user` + `check_pending_prompt`
+  - Low-level flow: `register_pending_prompt` + `check_pending_prompt`
+- Listener lifecycle operations require:
+  - `telegram_listener_health`
+  - `start_telegram_listener`
+  - `repair_telegram_listener`
+
+If only notify-only tools are available:
+- Explicitly say `notify-only mode` in the helper line.
+- Do not claim the agent is waiting for Telegram replies.
+- Do not claim listener startup/polling behavior.
+- Recommend fixing MCP server wiring and retrying.
+
+## Helper Message Rules (Mandatory)
+
+The one-line helper message must be capability-accurate.
+
+- Good (full input mode): `Using telegram-notify in input mode (ask_user + check_pending_prompt available).`
+- Good (notify-only mode): `Using telegram-notify in notify-only mode (reply-listener tools are unavailable in this runtime).`
+- Bad: claiming reply listening/input collection when only `send_telegram_notification` is exposed.
+
 ## When to Use
 
 Use Telegram notification tools at these checkpoints:
@@ -133,6 +161,11 @@ Key parameters: `session_id`, `prompt_id`, `consume`.
 
 Returns: `status`, `response_type`, `response_text`, `selected_option_ids`, `selected_options`.
 
+#### `wait_pending_prompt`
+Block until a prompt leaves `waiting` status (resolved/consumed/expired/cancelled) or timeout.
+
+Key parameters: `session_id`, `prompt_id`, `timeout_seconds`, `poll_interval_seconds`, `consume`.
+
 #### `list_pending_prompts`
 List prompts for a session with optional `status_filter` (waiting/resolved/consumed/expired/cancelled).
 
@@ -146,6 +179,11 @@ Start the reply listener daemon if not running. Includes self-healing for stale 
 
 #### `repair_telegram_listener`
 Clean up stale PID/lock state and optionally restart the listener.
+
+### Diagnostic Tools
+
+#### `telegram_notify_capabilities`
+Return exposed tool names, categories, and support flags. Use this to decide notify-only vs input mode.
 
 ## Input Workflow
 
@@ -164,6 +202,11 @@ To ask a user a question and get a response:
    If `status == "resolved"`, the `response_text` contains the user's answer.
    If `status == "waiting"`, try again after a short delay.
    If `status == "expired"`, the user did not respond in time.
+
+   Optional blocking helper:
+   ```
+   wait_pending_prompt(session_id="my-session", prompt_id="<id>", timeout_seconds=120, consume=true)
+   ```
 
 3. **For confirmations:** Use `ask_user_confirmation` -- returns Yes/No via inline buttons.
 

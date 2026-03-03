@@ -177,7 +177,11 @@ Example with optional vars in Cursor:
 
 ## Installing the Agent Skill
 
-This repo includes an agent skill at `.agents/skills/telegram-notify/SKILL.md` that teaches agents when and how to use the notification tools. The skill works with both Cursor and Codex.
+This repo includes an agent skill folder at `.agents/skills/telegram-notify/`:
+- `SKILL.md` (human-readable workflow)
+- `openai.yaml` (machine-readable metadata + MCP tool dependencies)
+
+The skill works with both Cursor and Codex.
 
 ### Automatic (project-level)
 
@@ -193,10 +197,12 @@ Copy the skill folder to your global skills directory so it is available in ever
 # Linux / macOS
 mkdir -p ~/.cursor/skills/telegram-notify
 cp .agents/skills/telegram-notify/SKILL.md ~/.cursor/skills/telegram-notify/SKILL.md
+cp .agents/skills/telegram-notify/openai.yaml ~/.cursor/skills/telegram-notify/openai.yaml
 
 # Windows (PowerShell)
 New-Item -ItemType Directory -Path "$HOME\.cursor\skills\telegram-notify" -Force
 Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.cursor\skills\telegram-notify\SKILL.md"
+Copy-Item ".agents\skills\telegram-notify\openai.yaml" "$HOME\.cursor\skills\telegram-notify\openai.yaml"
 ```
 
 **Codex:**
@@ -205,10 +211,12 @@ Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.cursor\skills\telegr
 # Linux / macOS
 mkdir -p ~/.agents/skills/telegram-notify
 cp .agents/skills/telegram-notify/SKILL.md ~/.agents/skills/telegram-notify/SKILL.md
+cp .agents/skills/telegram-notify/openai.yaml ~/.agents/skills/telegram-notify/openai.yaml
 
 # Windows (PowerShell)
 New-Item -ItemType Directory -Path "$HOME\.agents\skills\telegram-notify" -Force
 Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.agents\skills\telegram-notify\SKILL.md"
+Copy-Item ".agents\skills\telegram-notify\openai.yaml" "$HOME\.agents\skills\telegram-notify\openai.yaml"
 ```
 
 ### Install from GitHub (without cloning)
@@ -218,11 +226,15 @@ Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.agents\skills\telegr
 mkdir -p ~/.cursor/skills/telegram-notify
 curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
   -o ~/.cursor/skills/telegram-notify/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml \
+  -o ~/.cursor/skills/telegram-notify/openai.yaml
 
 # Codex
 mkdir -p ~/.agents/skills/telegram-notify
 curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
   -o ~/.agents/skills/telegram-notify/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml \
+  -o ~/.agents/skills/telegram-notify/openai.yaml
 ```
 
 On Windows (PowerShell):
@@ -232,14 +244,28 @@ On Windows (PowerShell):
 New-Item -ItemType Directory -Path "$HOME\.cursor\skills\telegram-notify" -Force
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
   -OutFile "$HOME\.cursor\skills\telegram-notify\SKILL.md"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml" `
+  -OutFile "$HOME\.cursor\skills\telegram-notify\openai.yaml"
 
 # Codex
 New-Item -ItemType Directory -Path "$HOME\.agents\skills\telegram-notify" -Force
 Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
   -OutFile "$HOME\.agents\skills\telegram-notify\SKILL.md"
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml" `
+  -OutFile "$HOME\.agents\skills\telegram-notify\openai.yaml"
 ```
 
 Restart Cursor or Codex after installing the skill.
+
+### Skill/MCP sanity check
+
+1. Verify MCP server wiring:
+   - `codex mcp get telegram_notify`
+   - Ensure the command points to the full server entrypoint (`telegram-mcp-notify`, `uvx ... telegram-mcp-notify`, or your wrapper that imports `telegram_mcp_notify.server`).
+2. Verify tool coverage in runtime:
+   - Full input mode should expose `ask_user` and `check_pending_prompt` (plus listener lifecycle tools).
+   - If only `send_telegram_notification` is exposed, treat it as notify-only mode and do not claim reply listening.
+3. Restart Codex/Cursor after MCP or skill file changes.
 
 ---
 
@@ -267,6 +293,7 @@ Restart Cursor or Codex after installing the skill.
 |------|-------------|
 | `register_pending_prompt` | Register prompt with text/poll/inline delivery |
 | `check_pending_prompt` | Check status and consume resolved response |
+| `wait_pending_prompt` | Block until prompt is resolved/expired/cancelled or timeout |
 | `list_pending_prompts` | List prompts by session with status filter |
 
 ### Lifecycle Tools
@@ -276,6 +303,12 @@ Restart Cursor or Codex after installing the skill.
 | `telegram_listener_health` | Listener health diagnostics |
 | `start_telegram_listener` | Start the reply listener daemon |
 | `repair_telegram_listener` | Repair stale PID/lock and optionally restart |
+
+### Diagnostic Tools
+
+| Tool | Description |
+|------|-------------|
+| `telegram_notify_capabilities` | Return exposed tool names/groups and supported interaction modes |
 
 ## Troubleshooting
 

@@ -27,6 +27,8 @@ from .inbox import (
     INPUT_MODE_POLL,
     INPUT_MODE_TEXT,
     STATUS_CANCELLED,
+    STATUS_CONSUMED,
+    STATUS_EXPIRED,
     STATUS_RESOLVED,
     cancel_prompt as cancel_prompt_in_db,
     consume_prompt,
@@ -91,6 +93,41 @@ EVENT_TOKENS = {
     "input required",
 }
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
+TERMINAL_PROMPT_STATUSES = {
+    STATUS_RESOLVED,
+    STATUS_CONSUMED,
+    STATUS_EXPIRED,
+    STATUS_CANCELLED,
+}
+
+_TOOL_GROUP_NOTIFICATION = ("send_telegram_notification",)
+_TOOL_GROUP_HIGH_LEVEL_INPUT = (
+    "ask_user",
+    "ask_user_confirmation",
+    "ask_user_choice",
+    "cancel_prompt",
+    "get_recent_messages",
+)
+_TOOL_GROUP_LOW_LEVEL_INPUT = (
+    "register_pending_prompt",
+    "check_pending_prompt",
+    "list_pending_prompts",
+    "wait_pending_prompt",
+)
+_TOOL_GROUP_LIFECYCLE = (
+    "telegram_listener_health",
+    "start_telegram_listener",
+    "repair_telegram_listener",
+)
+_TOOL_GROUP_DIAGNOSTICS = ("telegram_notify_capabilities",)
+
+EXPOSED_TOOL_NAMES = (
+    *_TOOL_GROUP_NOTIFICATION,
+    *_TOOL_GROUP_HIGH_LEVEL_INPUT,
+    *_TOOL_GROUP_LOW_LEVEL_INPUT,
+    *_TOOL_GROUP_LIFECYCLE,
+    *_TOOL_GROUP_DIAGNOSTICS,
+)
 
 
 def _to_error_payload(error_text: str) -> dict[str, Any]:
@@ -1364,6 +1401,93 @@ def tool_get_recent_messages(
     except Exception as exc:
         _stderr(f"telegram_notify_server get_recent_messages error: {exc}")
         return {"ok": False, "error": str(exc)}
+
+
+@SERVER.tool(
+    name="wait_pending_prompt",
+    description=(
+        "Wait for a pending prompt to leave waiting status and return the latest prompt state. "
+        "Useful when the client wants a single blocking call instead of manual polling."
+    ),
+)
+def wait_pending_prompt(
+    session_id: str,
+    prompt_id: str,
+    timeout_seconds: float = 60.0,
+    poll_interval_seconds: float = 2.0,
+    consume: bool = True,
+    db_path: str | None = None,
+) -> dict[str, Any]:
+    try:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_prompt_id = str(prompt_id or "").strip()
+        if not normalized_session_id or not normalized_prompt_id:
+            return {"ok": False, "error": "session_id and prompt_id are required."}
+
+        timeout_s = max(0.0, float(timeout_seconds))
+        poll_s = max(0.1, float(poll_interval_seconds))
+        started = time.monotonic()
+        deadline = started + timeout_s
+        polls = 0
+
+        while True:
+            polls += 1
+            result = check_pending_prompt(
+                session_id=normalized_session_id,
+                prompt_id=normalized_prompt_id,
+                consume=bool(consume),
+                db_path=db_path,
+            )
+            elapsed = time.monotonic() - started
+            result["elapsed_seconds"] = round(max(0.0, elapsed), 3)
+            result["poll_count"] = polls
+
+            if not bool(result.get("ok")):
+                result["timed_out"] = False
+                return result
+
+            status = str(result.get("status") or "").strip().lower()
+            if status in TERMINAL_PROMPT_STATUSES:
+                result["timed_out"] = False
+                return result
+
+            if time.monotonic() >= deadline:
+                result["timed_out"] = True
+                result["recommended_action"] = "Continue polling or increase timeout_seconds."
+                return result
+
+            sleep_seconds = min(poll_s, max(0.0, deadline - time.monotonic()))
+            if sleep_seconds > 0:
+                time.sleep(sleep_seconds)
+    except Exception as exc:
+        _stderr(f"telegram_notify_server wait_pending_prompt error: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+@SERVER.tool(
+    name="telegram_notify_capabilities",
+    description="Return the server's exposed tool names and capability groups.",
+)
+def telegram_notify_capabilities() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "server": "telegram_notify",
+        "tool_count": len(EXPOSED_TOOL_NAMES),
+        "tools": list(EXPOSED_TOOL_NAMES),
+        "tools_by_category": {
+            "notification": list(_TOOL_GROUP_NOTIFICATION),
+            "high_level_input": list(_TOOL_GROUP_HIGH_LEVEL_INPUT),
+            "low_level_input": list(_TOOL_GROUP_LOW_LEVEL_INPUT),
+            "lifecycle": list(_TOOL_GROUP_LIFECYCLE),
+            "diagnostics": list(_TOOL_GROUP_DIAGNOSTICS),
+        },
+        "supports": {
+            "notifications": True,
+            "pending_prompts": True,
+            "listener_lifecycle": True,
+            "sync_wait_for_prompt": True,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
