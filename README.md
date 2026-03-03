@@ -95,6 +95,13 @@ codex mcp add telegram_notify \
   -- uvx --from "git+https://github.com/hyper-tew/telegram-mcp-notify" telegram-mcp-notify
 ```
 
+## Tracked Config Templates
+
+This repo includes ready-to-copy templates that pin the MCP source to this GitHub repository:
+
+- [docs/config-examples/cursor.mcp.json](docs/config-examples/cursor.mcp.json)
+- [docs/config-examples/codex.config.toml](docs/config-examples/codex.config.toml)
+
 ---
 
 ## Alternative: Pre-install with pip
