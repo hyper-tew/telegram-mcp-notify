@@ -16,7 +16,7 @@ venv/
 .env.*
 !.env.example
 data/
-/docs/agent_change_logs
+docs/agent_change_logs
 
 # Local MCP/client/editor configs often contain real credentials.
 /.cursor/
