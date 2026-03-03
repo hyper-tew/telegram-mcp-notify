@@ -49,7 +49,7 @@ def test_process_callback_update_resolves_inline_prompt(monkeypatch, tmp_path) -
     assert record["selected_option_ids"] == [1]
     assert record["selected_options"] == ["B"]
     assert len(callback_calls) == 1
-    assert callback_calls[0]["text"] == "Selected: B"
+    assert callback_calls[0]["text"] == "Selection confirmed: B"
 
 
 def test_process_callback_update_does_not_send_toast_for_non_choice_prompt(monkeypatch, tmp_path) -> None:
