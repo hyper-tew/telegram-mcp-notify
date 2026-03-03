@@ -16,3 +16,22 @@ venv/
 .env.*
 !.env.example
 data/
+docs/agent_change_logs/
+
+# Local MCP/client/editor configs often contain real credentials.
+/.cursor/
+/.codex/
+/.mcp.json
+
+# Common local secret/certificate material.
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local runtime artifacts.
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pid

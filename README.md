@@ -2,6 +2,14 @@
 
 Telegram notification MCP server with bidirectional reply support for AI coding agents (Cursor, Codex, Claude Code).
 
+## IMPORTANT DISCLAIMER (WIP / SELF-USE)
+
+> [!WARNING]
+> This repository is still in active development and currently intended for personal/self use and experimentation.
+> APIs and behavior may change at any time without notice.
+> Security hardening and production reliability are not guaranteed yet.
+> Feel free to try it out, but use it at your own risk.
+
 ## Features
 
 - **Outbound notifications**: Send structured Telegram messages for questions, plans, errors, final results, and attention-needed events.
@@ -16,6 +24,12 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 - **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or `pip`
 - **Telegram bot token** -- create one via [@BotFather](https://t.me/BotFather)
 - **Telegram chat ID** -- send any message to your bot, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and look for `"chat":{"id": ...}`
+
+## Credential Safety (Before Going Public)
+
+- Keep `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` only in local config/env files.
+- Never commit real credentials to tracked files, issue comments, or PR descriptions.
+- Always run `git status` before committing to confirm no local config files are staged.
 
 ---
 
