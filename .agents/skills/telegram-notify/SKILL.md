@@ -38,8 +38,6 @@ Use Telegram notification tools at these checkpoints:
 
 ## Notification Protocol (Mandatory)
 
-Follow these rules from `AGENTS.md`:
-
 1. Use compact message format:
    - Line 1: `{emoji} {EVENT} | {task name}`
    - Line 2: `{short summary}`
@@ -170,59 +168,3 @@ To ask a user a question and get a response:
 3. **For confirmations:** Use `ask_user_confirmation` -- returns Yes/No via inline buttons.
 
 4. **For multiple choice:** Use `ask_user_choice` -- auto-picks inline vs poll based on option count.
-
-## Setup
-
-### Environment Variables (Required)
-```
-TELEGRAM_BOT_TOKEN=<your-bot-token>
-TELEGRAM_CHAT_ID=<your-chat-id>
-```
-
-### MCP Server Registration
-
-**Cursor** (`.mcp.json`):
-```json
-{
-  "mcpServers": {
-    "telegram_notify": {
-      "command": "telegram-mcp-notify",
-      "args": []
-    }
-  }
-}
-```
-
-**Codex** (`~/.codex/config.toml`):
-```toml
-[mcp_servers.telegram_notify]
-command = "telegram-mcp-notify"
-args = []
-```
-
-### Installation
-```bash
-pip install ./telegram-mcp-notify
-# or from git:
-pip install git+https://github.com/USER/telegram-mcp-notify.git
-```
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| No notifications received | Bot token or chat ID misconfigured | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
-| Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `repair_telegram_listener` |
-| "stale_lock" health reason | Previous listener crashed without cleanup | Call `repair_telegram_listener(restart=true)` |
-| "heartbeat_stale" | Listener froze or network issue | Call `repair_telegram_listener(restart=true)` |
-| Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |
-| Inline button not responding | Callback not matched | Check listener health; ensure listener is running |
-
-## Data Paths
-
-All data defaults to `~/.telegram-mcp-notify/`:
-- `inbox.db` -- SQLite inbox database
-- `listener.log` -- Listener log file
-- `locks/` -- Singleton lock files
-
-Override with environment variables: `TELEGRAM_INBOX_DB_PATH`, `TELEGRAM_LISTENER_LOG_PATH`, `TELEGRAM_SINGLETON_LOCK_DIR`.

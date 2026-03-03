@@ -13,11 +13,75 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 
 ## Prerequisites
 
-- **Python 3.11+**
+- **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or `pip`
 - **Telegram bot token** -- create one via [@BotFather](https://t.me/BotFather)
 - **Telegram chat ID** -- send any message to your bot, then open `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser and look for `"chat":{"id": ...}`
 
-## Installation
+---
+
+## Quick Start -- Cursor
+
+No pre-installation required. Cursor launches the server on demand via `uvx`.
+
+Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+  "mcpServers": {
+    "telegram_notify": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/hyper-tew/telegram-mcp-notify",
+        "telegram-mcp-notify"
+      ],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
+        "TELEGRAM_CHAT_ID": "123456789"
+      }
+    }
+  }
+}
+```
+
+Replace the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` values with your own credentials.
+
+Restart Cursor after saving the file.
+
+## Quick Start -- Codex
+
+No pre-installation required. Codex launches the server on demand via `uvx`.
+
+**Option A -- Edit config.toml**
+
+Add to `~/.codex/config.toml` (global) or `.codex/config.toml` (project-scoped, trusted projects only):
+
+```toml
+[mcp_servers.telegram_notify]
+command = "uvx"
+args = ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"]
+
+[mcp_servers.telegram_notify.env]
+TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
+TELEGRAM_CHAT_ID = "123456789"
+```
+
+Replace the token and chat ID values with your own credentials.
+
+**Option B -- CLI one-liner**
+
+```bash
+codex mcp add telegram_notify \
+  --env TELEGRAM_BOT_TOKEN=123456:ABC-DEF... \
+  --env TELEGRAM_CHAT_ID=123456789 \
+  -- uvx --from "git+https://github.com/hyper-tew/telegram-mcp-notify" telegram-mcp-notify
+```
+
+---
+
+## Alternative: Pre-install with pip
+
+If you prefer to install the package first (e.g. for pinning a version or offline use):
 
 ```bash
 # From GitHub
@@ -30,13 +94,9 @@ pip install ./telegram-mcp-notify
 pip install -e "./telegram-mcp-notify[dev]"
 ```
 
-After installation the `telegram-mcp-notify` command is available on your `PATH`.
+Then reference the command directly (no `uvx` wrapper needed):
 
-## Setup -- Cursor
-
-Create or edit the MCP configuration file and put your Telegram credentials in the `env` block.
-
-**Project-level** -- `.cursor/mcp.json` in your project root (applies to that project only):
+**Cursor** (`.cursor/mcp.json`):
 
 ```json
 {
@@ -53,17 +113,7 @@ Create or edit the MCP configuration file and put your Telegram credentials in t
 }
 ```
 
-**Global** -- `~/.cursor/mcp.json` (applies to all projects):
-
-Same JSON structure as above.
-
-> **Note:** Restart Cursor after editing the MCP configuration for changes to take effect.
-
-## Setup -- Codex
-
-Add the server to your Codex `config.toml` with credentials in the `[mcp_servers.telegram_notify.env]` table.
-
-**Global** -- `~/.codex/config.toml`:
+**Codex** (`~/.codex/config.toml`):
 
 ```toml
 [mcp_servers.telegram_notify]
@@ -75,43 +125,109 @@ TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
 TELEGRAM_CHAT_ID = "123456789"
 ```
 
-**Project-scoped** -- `.codex/config.toml` in your project root (trusted projects only). Same TOML structure as above.
+---
 
-**CLI shortcut** -- you can also add the server from the terminal:
+## Optional Environment Variables
 
-```bash
-codex mcp add telegram_notify \
-  --env TELEGRAM_BOT_TOKEN=123456:ABC-DEF... \
-  --env TELEGRAM_CHAT_ID=123456789 \
-  -- telegram-mcp-notify
-```
+Add any of these alongside the required credentials in the same `env` block:
 
-## Optional Configuration
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TELEGRAM_PARSE_MODE` | None | Message parse mode (`HTML` or `Markdown`) |
+| `TELEGRAM_DISABLE_NOTIFICATION` | `false` | Suppress all notifications |
+| `TELEGRAM_TIMEOUT_SECONDS` | `10` | HTTP request timeout |
+| `TELEGRAM_INBOX_DB_PATH` | `~/.telegram-mcp-notify/inbox.db` | SQLite inbox path |
+| `TELEGRAM_LISTENER_LOG_PATH` | `~/.telegram-mcp-notify/listener.log` | Listener log path |
+| `TELEGRAM_SINGLETON_LOCK_DIR` | `~/.telegram-mcp-notify/locks/` | Lock file directory |
 
-You can pass additional environment variables in the same `env` block alongside the required ones.
-
-**Cursor** (inside the `"env"` object):
+Example with optional vars in Cursor:
 
 ```json
 {
-  "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
-  "TELEGRAM_CHAT_ID": "123456789",
-  "TELEGRAM_PARSE_MODE": "HTML",
-  "TELEGRAM_TIMEOUT_SECONDS": "15"
+  "mcpServers": {
+    "telegram_notify": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"],
+      "env": {
+        "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
+        "TELEGRAM_CHAT_ID": "123456789",
+        "TELEGRAM_PARSE_MODE": "HTML",
+        "TELEGRAM_TIMEOUT_SECONDS": "15"
+      }
+    }
+  }
 }
 ```
 
-**Codex** (under `[mcp_servers.telegram_notify.env]`):
+---
 
-```toml
-[mcp_servers.telegram_notify.env]
-TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
-TELEGRAM_CHAT_ID = "123456789"
-TELEGRAM_PARSE_MODE = "HTML"
-TELEGRAM_TIMEOUT_SECONDS = "15"
+## Installing the Agent Skill
+
+This repo includes an agent skill at `.agents/skills/telegram-notify/SKILL.md` that teaches agents when and how to use the notification tools. The skill works with both Cursor and Codex.
+
+### Automatic (project-level)
+
+If you clone this repo, both Cursor and Codex discover the skill automatically from `.agents/skills/`.
+
+### Global install (all projects)
+
+Copy the skill folder to your global skills directory so it is available in every project.
+
+**Cursor:**
+
+```bash
+# Linux / macOS
+mkdir -p ~/.cursor/skills/telegram-notify
+cp .agents/skills/telegram-notify/SKILL.md ~/.cursor/skills/telegram-notify/SKILL.md
+
+# Windows (PowerShell)
+New-Item -ItemType Directory -Path "$HOME\.cursor\skills\telegram-notify" -Force
+Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.cursor\skills\telegram-notify\SKILL.md"
 ```
 
-See the full list of variables in the [Environment Variables](#environment-variables) table below.
+**Codex:**
+
+```bash
+# Linux / macOS
+mkdir -p ~/.agents/skills/telegram-notify
+cp .agents/skills/telegram-notify/SKILL.md ~/.agents/skills/telegram-notify/SKILL.md
+
+# Windows (PowerShell)
+New-Item -ItemType Directory -Path "$HOME\.agents\skills\telegram-notify" -Force
+Copy-Item ".agents\skills\telegram-notify\SKILL.md" "$HOME\.agents\skills\telegram-notify\SKILL.md"
+```
+
+### Install from GitHub (without cloning)
+
+```bash
+# Cursor
+mkdir -p ~/.cursor/skills/telegram-notify
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
+  -o ~/.cursor/skills/telegram-notify/SKILL.md
+
+# Codex
+mkdir -p ~/.agents/skills/telegram-notify
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
+  -o ~/.agents/skills/telegram-notify/SKILL.md
+```
+
+On Windows (PowerShell):
+
+```powershell
+# Cursor
+New-Item -ItemType Directory -Path "$HOME\.cursor\skills\telegram-notify" -Force
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
+  -OutFile "$HOME\.cursor\skills\telegram-notify\SKILL.md"
+
+# Codex
+New-Item -ItemType Directory -Path "$HOME\.agents\skills\telegram-notify" -Force
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
+  -OutFile "$HOME\.agents\skills\telegram-notify\SKILL.md"
+```
+
+Restart Cursor or Codex after installing the skill.
+
+---
 
 ## Available Tools
 
@@ -146,19 +262,6 @@ See the full list of variables in the [Environment Variables](#environment-varia
 | `telegram_listener_health` | Listener health diagnostics |
 | `start_telegram_listener` | Start the reply listener daemon |
 | `repair_telegram_listener` | Repair stale PID/lock and optionally restart |
-
-## Environment Variables
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | - | Bot API token |
-| `TELEGRAM_CHAT_ID` | Yes | - | Trusted chat ID |
-| `TELEGRAM_PARSE_MODE` | No | None | Message parse mode (HTML/Markdown) |
-| `TELEGRAM_DISABLE_NOTIFICATION` | No | false | Suppress all notifications |
-| `TELEGRAM_TIMEOUT_SECONDS` | No | 10 | HTTP request timeout |
-| `TELEGRAM_INBOX_DB_PATH` | No | `~/.telegram-mcp-notify/inbox.db` | SQLite inbox path |
-| `TELEGRAM_LISTENER_LOG_PATH` | No | `~/.telegram-mcp-notify/listener.log` | Listener log path |
-| `TELEGRAM_SINGLETON_LOCK_DIR` | No | `~/.telegram-mcp-notify/locks/` | Lock file directory |
 
 ## Troubleshooting
 

@@ -1,5 +1,39 @@
 # readmeSetupInstructions -- 2026-03-03
 
+## Index
+
+- 2026-03-03: Initial rewrite -- credentials in env blocks, correct GitHub URL
+- 2026-03-03 Update 2 -- uvx zero-install, skills consolidation, install-from-GitHub instructions
+
+---
+
+## Update 2 -- 2026-03-03
+
+- **Date Applied:** 2026-03-03
+- **Motivation:** Align the repo with standard MCP server distribution patterns (uvx zero-install from GitHub) and the Agent Skills standard (`.agents/skills/`). Make it easy for users to install both the MCP server and the agent skill without cloning the repo.
+- **Main Modified Files:**
+  - `README.md`
+  - `.agents/skills/telegram-notify/SKILL.md` (new -- canonical skill location)
+  - `docs/.cursor/SKILL.md` (deleted)
+  - `docs/.codex/SKILL.md` (deleted)
+- **Change Summary:**
+  1. README now uses `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify telegram-mcp-notify` as the primary install method for both Cursor and Codex, removing the need for a separate `pip install` step.
+  2. Added "Alternative: Pre-install with pip" section for users who prefer traditional installation.
+  3. Consolidated duplicate skill files from `docs/.cursor/` and `docs/.codex/` into a single `.agents/skills/telegram-notify/SKILL.md` (standard location recognised by both Cursor and Codex).
+  4. Added "Installing the Agent Skill" section with instructions for project-level auto-discovery, global install (copy commands for Linux/macOS/Windows), and install-from-GitHub via curl/Invoke-WebRequest.
+- **Before/After (Key Snippet):**
+
+```diff
+-"command": "telegram-mcp-notify",
+-"args": [],
++"command": "uvx",
++"args": ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"],
+```
+
+- **Notes/Follow-ups:** If the package is published to PyPI in the future, the `uvx` command can be simplified to just `uvx telegram-mcp-notify`.
+
+---
+
 ## Change Details
 
 - **Date Applied:** 2026-03-03
