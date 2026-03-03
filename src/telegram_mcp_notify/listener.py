@@ -41,6 +41,10 @@ DEFAULT_SINGLETON_POLICY = "machine_kill_old"
 DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
 CALLBACK_DATA_RE = re.compile(r"^c:([A-Za-z0-9_-]{4,40}):(\d{1,2})$")
+CALLBACK_TOAST_TEXT_MAX_CHARS = 200
+CALLBACK_TOAST_PREFIX = "Selected: "
+CALLBACK_TOAST_FALLBACK = "Selected."
+CALLBACK_TOAST_ELLIPSIS = "..."
 _CURRENT_LOG_PATH: Path | None = None
 
 
@@ -184,6 +188,23 @@ def _get_selected_options(choices: Any, option_ids: list[int]) -> list[str]:
     return selected
 
 
+def _build_choice_callback_toast_text(selected_option: str) -> str:
+    option_text = " ".join(str(selected_option or "").split()).strip()
+    if not option_text:
+        return CALLBACK_TOAST_FALLBACK
+    message = f"{CALLBACK_TOAST_PREFIX}{option_text}"
+    if len(message) <= CALLBACK_TOAST_TEXT_MAX_CHARS:
+        return message
+    allowed_option_chars = max(
+        0,
+        CALLBACK_TOAST_TEXT_MAX_CHARS - len(CALLBACK_TOAST_PREFIX) - len(CALLBACK_TOAST_ELLIPSIS),
+    )
+    trimmed_option = option_text[:allowed_option_chars].rstrip()
+    if not trimmed_option:
+        return CALLBACK_TOAST_FALLBACK
+    return f"{CALLBACK_TOAST_PREFIX}{trimmed_option}{CALLBACK_TOAST_ELLIPSIS}"
+
+
 def _poll_updates(
     *,
     client: httpx.Client,
@@ -291,11 +312,13 @@ def _process_callback_update(
     prompt_id: str | None = None
     selected_option_ids: list[int] = []
     selected_options: list[str] = []
+    prompt_kind = ""
     if callback_parsed is not None:
         namespace, option_idx = callback_parsed
         prompt = get_waiting_prompt_by_callback_namespace(callback_namespace=namespace, db_path=db_path)
         if prompt is not None:
             prompt_id = str(prompt.get("prompt_id") or "").strip() or None
+            prompt_kind = str(prompt.get("prompt_kind") or "").strip().lower()
             selected_option_ids = [option_idx]
             selected_options = _get_selected_options(prompt.get("choices"), selected_option_ids)
 
@@ -321,13 +344,20 @@ def _process_callback_update(
         db_path=db_path,
     )
 
+    callback_text: str | None = None
+    if accepted and prompt_kind == "choice" and selected_options:
+        callback_text = _build_choice_callback_toast_text(selected_options[0])
+
     try:
         if callback_query_id:
-            answer_telegram_callback_query(
-                callback_query_id=callback_query_id,
-                config=config,
-                max_retries=1,
-            )
+            answer_kwargs: dict[str, Any] = {
+                "callback_query_id": callback_query_id,
+                "config": config,
+                "max_retries": 1,
+            }
+            if callback_text:
+                answer_kwargs["text"] = callback_text
+            answer_telegram_callback_query(**answer_kwargs)
     except Exception:
         pass
 

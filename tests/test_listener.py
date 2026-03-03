@@ -22,6 +22,7 @@ def test_process_callback_update_resolves_inline_prompt(monkeypatch, tmp_path) -
         session_id="session-inline",
         prompt_id="prompt-inline",
         prompt_text="Choose one",
+        prompt_kind="choice",
         input_mode="inline",
         callback_namespace="cb_test",
         choices=["A", "B"],
@@ -48,6 +49,49 @@ def test_process_callback_update_resolves_inline_prompt(monkeypatch, tmp_path) -
     assert record["selected_option_ids"] == [1]
     assert record["selected_options"] == ["B"]
     assert len(callback_calls) == 1
+    assert callback_calls[0]["text"] == "Selected: B"
+
+
+def test_process_callback_update_does_not_send_toast_for_non_choice_prompt(monkeypatch, tmp_path) -> None:
+    callback_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        listener,
+        "answer_telegram_callback_query",
+        lambda **kwargs: callback_calls.append(kwargs) or {"ok": True},
+    )
+
+    db_path = tmp_path / "telegram_inbox.db"
+    initialize_inbox_db(db_path)
+    upsert_pending_prompt(
+        session_id="session-inline-confirm",
+        prompt_id="prompt-inline-confirm",
+        prompt_text="Approve change?",
+        prompt_kind="confirmation",
+        input_mode="inline",
+        callback_namespace="cb_confirm",
+        choices=["Yes", "No"],
+        db_path=db_path,
+    )
+
+    listener._process_callback_update(
+        update_id=13,
+        callback_query={
+            "id": "cbq-2",
+            "data": "c:cb_confirm:0",
+            "from": {"id": 8},
+            "message": {"message_id": 56, "chat": {"id": "trusted-chat"}},
+        },
+        trusted_chat_id="trusted-chat",
+        config=TelegramConfig(bot_token="token", chat_id="trusted-chat"),
+        db_path=db_path,
+    )
+
+    record = get_pending_prompt(prompt_id="prompt-inline-confirm", db_path=db_path)
+    assert record is not None
+    assert record["status"] == "resolved"
+    assert record["selected_options"] == ["Yes"]
+    assert len(callback_calls) == 1
+    assert "text" not in callback_calls[0]
 
 
 def test_process_poll_answer_update_resolves_poll_prompt(tmp_path) -> None:
