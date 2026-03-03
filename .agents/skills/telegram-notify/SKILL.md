@@ -41,6 +41,35 @@ If only notify-only tools are available:
 - Do not claim listener startup/polling behavior.
 - Recommend fixing MCP server wiring and retrying.
 
+## MCP-Tool-First Policy (Mandatory)
+
+When Telegram MCP tools are available in the runtime, use those MCP tools directly for question delivery, reply checks, and listener operations.
+
+- Do not bypass MCP tooling with local Python imports or direct Telegram API calls for standard user input workflows.
+- Non-MCP fallback is allowed only when MCP capabilities are missing or MCP server startup fails.
+- On fallback, explicitly state the failure reason and remediation path (for example: MCP wiring fix, listener repair, or Telegram polling conflict).
+
+## Required Full Input Tool Surface
+
+The expected full `telegram_notify` MCP surface is 14 tools:
+
+1. `send_telegram_notification`
+2. `ask_user`
+3. `ask_user_confirmation`
+4. `ask_user_choice`
+5. `cancel_prompt`
+6. `get_recent_messages`
+7. `register_pending_prompt`
+8. `check_pending_prompt`
+9. `list_pending_prompts`
+10. `wait_pending_prompt`
+11. `telegram_listener_health`
+12. `start_telegram_listener`
+13. `repair_telegram_listener`
+14. `telegram_notify_capabilities`
+
+If fewer tools are exposed, treat runtime as degraded and report missing capabilities before proceeding.
+
 ## Helper Message Rules (Mandatory)
 
 The one-line helper message must be capability-accurate.
@@ -97,6 +126,11 @@ Use Telegram notification tools at these checkpoints:
    - `event=error` for failures
    - **No progress events** -- do not send progress notifications
 3. On send failure, retry once; if second attempt fails, note it in the response and continue.
+
+If prompt delivery succeeds but prompt status remains `waiting`:
+- Run `telegram_listener_health`.
+- If unhealthy or stale, run `repair_telegram_listener(restart=true)`.
+- If diagnostics/logs show Telegram `409 Conflict` on `getUpdates`, stop the competing consumer using the same bot token and retry.
 
 ## Tool Reference
 

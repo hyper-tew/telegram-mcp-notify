@@ -1,5 +1,5 @@
 name: telegram-notify
-description: Send Telegram notifications and collect user input through the telegram_notify MCP server.
+description: Send Telegram notifications and collect user input through the telegram_notify MCP server with full 14-tool input/listener support.
 instructions: SKILL.md
 dependencies:
   mcp_tools:
