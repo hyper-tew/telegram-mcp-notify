@@ -230,7 +230,7 @@ def _parse_iso(raw: str | None) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(text)
-    except ValueError:
+    except Exception:
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -1413,7 +1413,7 @@ def tool_get_recent_messages(
 def wait_pending_prompt(
     session_id: str,
     prompt_id: str,
-    timeout_seconds: float = 60.0,
+    timeout_seconds: float = 300.0,
     poll_interval_seconds: float = 2.0,
     consume: bool = True,
     db_path: str | None = None,

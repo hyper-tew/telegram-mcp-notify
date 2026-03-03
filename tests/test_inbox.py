@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import telegram_mcp_notify.inbox as inbox_module
 from telegram_mcp_notify.inbox import (
     INPUT_MODE_INLINE,
     INPUT_MODE_POLL,
@@ -195,3 +196,13 @@ def test_listener_state_extended_fields_and_helpers(tmp_path) -> None:
     assert reset_state["pid"] is None
     assert reset_state["state_status"] == "stopped"
     assert reset_state["startup_confirmed"] == 0
+
+
+def test_parse_iso_handles_unexpected_parser_exception(monkeypatch) -> None:
+    class _BrokenDateTime:
+        @staticmethod
+        def fromisoformat(_text: str):
+            raise RuntimeError("parser-crash")
+
+    monkeypatch.setattr(inbox_module, "datetime", _BrokenDateTime)
+    assert inbox_module._parse_iso("2026-03-03T10:00:00+08:00") is None

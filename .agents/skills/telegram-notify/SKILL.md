@@ -60,10 +60,10 @@ When a Plan Mode question requires user input, Telegram is the primary channel a
    - Binary decision: `ask_user_confirmation`
    - 3+ concrete options: `ask_user_choice`
    - Free-form answer only when options are not feasible: `ask_user`
-3. Ask through Telegram and capture `prompt_id`.
+3. Ask through Telegram with explicit `timeout_minutes=5` and capture `prompt_id`.
 4. Wait deterministically:
-   - First: `wait_pending_prompt(session_id, prompt_id, timeout_seconds=180, consume=true)`
-   - If still ambiguous, one follow-up: `check_pending_prompt(session_id, prompt_id, consume=true)`
+   - First: `wait_pending_prompt(session_id, prompt_id, timeout_seconds=300, consume=true)`
+   - Then: one immediate final check `check_pending_prompt(session_id, prompt_id, consume=true)`
 5. If unavailable/failure/timeout:
    - Emit one explicit warning in chat: `Telegram input unavailable (<reason>); falling back to in-UI question.`
    - Ask exactly once via `request_user_input` with equivalent choices/defaults.
@@ -211,7 +211,7 @@ To ask a user a question and get a response:
 
 1. **Send the question:**
    ```
-   ask_user(question="Should I proceed?", session_id="my-session")
+   ask_user(question="Should I proceed?", session_id="my-session", timeout_minutes=5)
    ```
    Returns `{ prompt_id, status: "waiting", ... }`
 
@@ -225,7 +225,7 @@ To ask a user a question and get a response:
 
    Optional blocking helper:
    ```
-   wait_pending_prompt(session_id="my-session", prompt_id="<id>", timeout_seconds=120, consume=true)
+   wait_pending_prompt(session_id="my-session", prompt_id="<id>", timeout_seconds=300, consume=true)
    ```
 
 3. **For confirmations:** Use `ask_user_confirmation` -- returns Yes/No via inline buttons.

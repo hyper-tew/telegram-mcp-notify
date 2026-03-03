@@ -282,7 +282,9 @@ Restart Cursor or Codex after installing the skill.
 4. Plan Mode clarification routing policy:
    - In Plan Mode, direct clarification questions should be sent through Telegram input tools first.
    - Recommended type-aware routing: binary -> `ask_user_confirmation`; 3+ options -> `ask_user_choice`; free-form only when options are not feasible.
-   - Wait for reply using `wait_pending_prompt` (then `check_pending_prompt` if needed).
+   - Ask Telegram questions with `timeout_minutes=5`.
+   - Wait using `wait_pending_prompt(session_id, prompt_id, timeout_seconds=300, consume=true)`.
+   - Do one immediate final check via `check_pending_prompt(session_id, prompt_id, consume=true)` before fallback.
    - If Telegram input tools are unavailable or fail, explicitly state the reason and fall back to one in-UI question (`request_user_input`).
 
 ---

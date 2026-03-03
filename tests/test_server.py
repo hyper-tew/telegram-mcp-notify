@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -362,6 +363,21 @@ def test_wait_pending_prompt_times_out(monkeypatch) -> None:
     assert result["status"] == "waiting"
     assert result["timed_out"] is True
     assert result["poll_count"] == 1
+
+
+def test_wait_pending_prompt_default_timeout_is_five_minutes() -> None:
+    signature = inspect.signature(server.wait_pending_prompt)
+    assert signature.parameters["timeout_seconds"].default == 300.0
+
+
+def test_parse_iso_handles_unexpected_parser_exception(monkeypatch) -> None:
+    class _BrokenDateTime:
+        @staticmethod
+        def fromisoformat(_text: str):
+            raise RuntimeError("parser-crash")
+
+    monkeypatch.setattr(server, "datetime", _BrokenDateTime)
+    assert server._parse_iso("2026-03-03T10:00:00+08:00") is None
 
 
 def test_telegram_notify_capabilities_includes_new_tools() -> None:
