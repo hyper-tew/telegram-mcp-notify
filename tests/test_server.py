@@ -384,6 +384,73 @@ def test_telegram_notify_capabilities_includes_new_tools() -> None:
     result = server.telegram_notify_capabilities()
     assert result["ok"] is True
     assert "wait_pending_prompt" in result["tools"]
+    assert "stop_telegram_listener" in result["tools"]
+    assert "restart_telegram_listener" in result["tools"]
     assert "telegram_notify_capabilities" in result["tools"]
     assert result["tool_count"] == len(result["tools"])
     assert result["supports"]["sync_wait_for_prompt"] is True
+
+
+def test_stop_telegram_listener_uses_runtime_stop(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    monkeypatch.setattr(server, "initialize_inbox_db", lambda _db_path=None: db_path)
+    monkeypatch.setattr(server, "resolve_inbox_db_path", lambda value: Path(value))
+    monkeypatch.setattr(
+        server,
+        "_stop_listener_runtime",
+        lambda **_kwargs: {
+            "ok": True,
+            "actions_taken": ["terminated_pid:100:pid_only", "reset_runtime_state"],
+            "errors": [],
+            "diagnostics": {"health_reason": "stopped"},
+        },
+    )
+
+    result = server.stop_telegram_listener(db_path=str(db_path), force=False, reason="test-stop")
+    assert result["ok"] is True
+    assert "reset_runtime_state" in result["actions_taken"]
+
+
+def test_restart_telegram_listener_runs_stop_then_start(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    monkeypatch.setattr(server, "initialize_inbox_db", lambda _db_path=None: db_path)
+    monkeypatch.setattr(server, "resolve_inbox_db_path", lambda value: Path(value))
+    monkeypatch.setattr(
+        server,
+        "_stop_listener_runtime",
+        lambda **_kwargs: {"ok": True, "actions_taken": ["reset_runtime_state"], "errors": [], "diagnostics": {}},
+    )
+    monkeypatch.setattr(server, "update_listener_state", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        server,
+        "_ensure_listener_running",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "running": True,
+            "started": True,
+            "startup_confirmed": True,
+            "attempts": 1,
+            "diagnostics": {"health_reason": "healthy"},
+        },
+    )
+
+    result = server.restart_telegram_listener(db_path=str(db_path), reason="test-restart")
+    assert result["ok"] is True
+    assert result["start"]["ok"] is True
+
+
+def test_ensure_listener_running_respects_backoff_in_v2(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    monkeypatch.setattr(server, "_is_lifecycle_v2_enabled", lambda: True)
+    monkeypatch.setattr(server, "_listener_mode", lambda: "daemon")
+    monkeypatch.setattr(server, "_listener_autorestart_enabled", lambda: True)
+    monkeypatch.setattr(server, "_is_start_backoff_active", lambda _state: (True, 3.0))
+    monkeypatch.setattr(server, "_listener_health_payload", lambda *_args, **_kwargs: {"ok": True, "running": False, "startup_confirmed": False, "health_reason": "stale_pid"})
+    monkeypatch.setattr(server, "initialize_inbox_db", lambda _db_path=None: db_path)
+    monkeypatch.setattr(server, "resolve_inbox_db_path", lambda value: Path(value))
+    monkeypatch.setattr(server, "get_listener_state", lambda _db_path: {"consecutive_start_failures": 1, "last_start_attempt_utc": "2026-03-03T00:00:00+00:00"})
+
+    result = server._ensure_listener_running(db_path=str(db_path), self_heal=True)
+    assert result["ok"] is False
+    assert result["attempts"] == 0
+    assert result["diagnostics"]["health_reason"] == "start_backoff_active"

@@ -33,6 +33,8 @@ Before claiming this skill is running in input/listener mode, verify what tools 
 - Listener lifecycle operations require:
   - `telegram_listener_health`
   - `start_telegram_listener`
+  - `stop_telegram_listener`
+  - `restart_telegram_listener`
   - `repair_telegram_listener`
 
 If only notify-only tools are available:
@@ -230,6 +232,12 @@ Returns listener diagnostics: running status, PID, heartbeat age, health reason,
 
 #### `start_telegram_listener`
 Start the reply listener daemon if not running. Includes self-healing for stale state.
+
+#### `stop_telegram_listener`
+Stop the reply listener daemon and reset runtime state.
+
+#### `restart_telegram_listener`
+Deterministically stop then start the listener with health confirmation.
 
 #### `repair_telegram_listener`
 Clean up stale PID/lock state and optionally restart the listener.

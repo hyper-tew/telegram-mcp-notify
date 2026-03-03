@@ -166,6 +166,12 @@ Add any of these alongside the required credentials in the same `env` block:
 | `TELEGRAM_INBOX_DB_PATH` | `~/.telegram-mcp-notify/inbox.db` | SQLite inbox path |
 | `TELEGRAM_LISTENER_LOG_PATH` | `~/.telegram-mcp-notify/listener.log` | Listener log path |
 | `TELEGRAM_SINGLETON_LOCK_DIR` | `~/.telegram-mcp-notify/locks/` | Lock file directory |
+| `TELEGRAM_LIFECYCLE_V2` | `true` | Enable lifecycle-v2 robustness controls |
+| `TELEGRAM_LISTENER_MODE` | `daemon` | Listener lifecycle mode (`daemon` recommended) |
+| `TELEGRAM_LISTENER_AUTORESTART` | `true` | Allow auto-restart when listener is unhealthy |
+| `TELEGRAM_LISTENER_MAX_START_FAILURES` | `3` | Max consecutive start failures before hard-stop |
+| `TELEGRAM_LISTENER_BACKOFF_SECONDS` | `2,5,15` | Retry backoff schedule (seconds) after failures |
+| `TELEGRAM_TOKEN_FINGERPRINT` | None | Non-secret token label for diagnostics |
 
 Example with optional vars in Cursor:
 
@@ -322,6 +328,8 @@ Restart Cursor or Codex after installing the skill.
 |------|-------------|
 | `telegram_listener_health` | Listener health diagnostics |
 | `start_telegram_listener` | Start the reply listener daemon |
+| `stop_telegram_listener` | Stop listener and reset runtime state |
+| `restart_telegram_listener` | Deterministic stop/start with health confirmation |
 | `repair_telegram_listener` | Repair stale PID/lock and optionally restart |
 
 ### Diagnostic Tools
@@ -338,6 +346,8 @@ Restart Cursor or Codex after installing the skill.
 | Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `repair_telegram_listener` |
 | "stale_lock" health reason | Previous listener crashed | Call `repair_telegram_listener(restart=true)` |
 | "heartbeat_stale" | Listener froze or network issue | Call `repair_telegram_listener(restart=true)` |
+| "token_conflict" health reason | Another client is polling `getUpdates` with same token | Stop competing consumer or use a separate bot token |
+| "start_backoff_active" | Listener recently failed to start repeatedly | Wait for backoff or call `restart_telegram_listener` after fixing root cause |
 | Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |
 | Inline button not responding | Callback not matched | Ensure listener is running via `telegram_listener_health` |
 | `Client error for command spawn telegram-mcp-notify ENOENT` | Executable not installed or not on app PATH | Use `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify telegram-mcp-notify` in MCP config, or switch to `python -m telegram_mcp_notify.server` |

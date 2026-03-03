@@ -303,6 +303,8 @@ def acquire_singleton_or_preempt(
     owner_label: str,
     retries: int,
     retry_delay_s: float,
+    *,
+    preempt_alive_owner: bool = True,
 ) -> SingletonLease:
     """Acquire a file-based singleton lock, preempting stale owners."""
     normalized_lock_name = _normalize_lock_name(lock_name)
@@ -345,7 +347,12 @@ def acquire_singleton_or_preempt(
 
         _safe_close(handle)
         owner_pid = _read_owner_pid(lock_path)
-        if owner_pid is not None and owner_pid != os.getpid() and _is_process_alive(owner_pid):
+        if (
+            bool(preempt_alive_owner)
+            and owner_pid is not None
+            and owner_pid != os.getpid()
+            and _is_process_alive(owner_pid)
+        ):
             terminated = _terminate_pid(owner_pid)
             if terminated and owner_pid not in preempted:
                 preempted.append(owner_pid)
@@ -360,6 +367,7 @@ def acquire_singleton_or_preempt(
         "attempts": max_retries + 1,
         "retries": max_retries,
         "retry_delay_seconds": retry_delay_seconds,
+        "preempt_alive_owner": bool(preempt_alive_owner),
         "last_owner_pid": last_owner_pid,
         "preempted_pids": list(preempted),
     }

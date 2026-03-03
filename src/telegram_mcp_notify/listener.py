@@ -37,7 +37,7 @@ from .singleton import (
 
 LISTENER_VERSION = "1"
 SINGLETON_LOCK_NAME = "telegram_reply_listener"
-DEFAULT_SINGLETON_POLICY = "machine_kill_old"
+DEFAULT_SINGLETON_POLICY = "strict_single_owner"
 DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
 CALLBACK_DATA_RE = re.compile(r"^c:([A-Za-z0-9_-]{4,40}):(\d{1,2})$")
@@ -46,6 +46,7 @@ CALLBACK_TOAST_PREFIX = "Selection confirmed: "
 CALLBACK_TOAST_FALLBACK = "Selection confirmed."
 CALLBACK_TOAST_ELLIPSIS = "..."
 _CURRENT_LOG_PATH: Path | None = None
+_SUPPORTED_SINGLETON_POLICIES = {"machine_kill_old", "strict_single_owner"}
 
 
 def _utc_iso_now() -> str:
@@ -102,20 +103,33 @@ def _load_singleton_settings() -> tuple[str, int, float]:
 
 def _acquire_listener_singleton() -> SingletonLease:
     policy, retries, retry_delay_seconds = _load_singleton_settings()
-    if policy != DEFAULT_SINGLETON_POLICY:
+    if policy not in _SUPPORTED_SINGLETON_POLICIES:
         raise ValueError(
             f"Unsupported TELEGRAM_SINGLETON_POLICY: {policy}. "
-            f"Supported value: {DEFAULT_SINGLETON_POLICY}"
+            f"Supported values: {', '.join(sorted(_SUPPORTED_SINGLETON_POLICIES))}"
         )
     lease = acquire_singleton_or_preempt(
         lock_name=SINGLETON_LOCK_NAME,
         owner_label=SINGLETON_LOCK_NAME,
         retries=retries,
         retry_delay_s=retry_delay_seconds,
+        preempt_alive_owner=(policy == "machine_kill_old"),
     )
     for replaced_pid in lease.preempted_pids:
         _log(f"preempted existing process pid={replaced_pid}", level="WARNING")
     return lease
+
+
+def _is_token_conflict_error(exc: Exception) -> bool:
+    status_error_cls = getattr(httpx, "HTTPStatusError", None)
+    if isinstance(status_error_cls, type) and isinstance(exc, status_error_cls):
+        try:
+            if int(exc.response.status_code) == 409:
+                return True
+        except Exception:
+            pass
+    text = str(exc or "").strip().lower()
+    return ("409" in text) and ("conflict" in text)
 
 
 def _to_int(value: Any) -> int | None:
@@ -540,13 +554,16 @@ def run_listener(
             try:
                 _preflight_get_updates(client=client, bot_token=config.bot_token)
             except Exception as exc:
-                error_msg = f"startup preflight getUpdates failed: {exc}"
+                conflict = _is_token_conflict_error(exc)
+                state_status = "token_conflict" if conflict else "error"
+                prefix = "token_conflict" if conflict else "startup preflight getUpdates failed"
+                error_msg = f"{prefix}: {exc}"
                 update_listener_state(
                     heartbeat_utc=_utc_iso_now(),
                     pid=pid,
                     version=LISTENER_VERSION,
                     instance_id=resolved_instance_id,
-                    state_status="error",
+                    state_status=state_status,
                     startup_confirmed=False,
                     last_error=str(error_msg),
                     last_error_utc=_utc_iso_now(),
@@ -610,18 +627,25 @@ def run_listener(
                     break
                 except Exception as exc:
                     error_text = str(exc)
+                    is_conflict = _is_token_conflict_error(exc)
+                    status = "token_conflict" if is_conflict else "degraded"
+                    if is_conflict and not error_text.lower().startswith("token_conflict"):
+                        error_text = f"token_conflict: {error_text}"
                     update_listener_state(
                         heartbeat_utc=_utc_iso_now(),
                         pid=pid,
                         version=LISTENER_VERSION,
                         instance_id=resolved_instance_id,
-                        state_status="degraded",
+                        state_status=status,
                         startup_confirmed=True,
                         last_error=error_text,
                         last_error_utc=_utc_iso_now(),
                         db_path=inbox_db,
                     )
                     _log(f"listener loop error: {error_text}", level="ERROR")
+                    if is_conflict:
+                        _log("listener exiting due to token conflict; avoid rapid respawn loop", level="WARNING")
+                        break
                     time.sleep(sleep_s)
     finally:
         update_listener_state(

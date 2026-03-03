@@ -15,5 +15,7 @@ dependencies:
     - telegram_notify:get_recent_messages
     - telegram_notify:telegram_listener_health
     - telegram_notify:start_telegram_listener
+    - telegram_notify:stop_telegram_listener
+    - telegram_notify:restart_telegram_listener
     - telegram_notify:repair_telegram_listener
     - telegram_notify:telegram_notify_capabilities

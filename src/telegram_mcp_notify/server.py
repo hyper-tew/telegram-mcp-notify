@@ -75,7 +75,7 @@ DEFAULT_TASK_NAME = "notification"
 DEFAULT_PROMPT_EXPIRY_MINUTES = 5
 SINGLETON_LOCK_NAME = "telegram_reply_listener"
 SERVER_LOCK_NAME = "telegram_notify_server"
-DEFAULT_SINGLETON_POLICY = "machine_kill_old"
+DEFAULT_SINGLETON_POLICY = "strict_single_owner"
 DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
 DEFAULT_INLINE_COLUMNS = 2
@@ -84,6 +84,14 @@ LISTENER_STARTUP_TIMEOUT_SECONDS = 10.0
 LISTENER_STARTUP_POLL_SECONDS = 0.25
 LISTENER_START_MAX_ATTEMPTS = 2
 LISTENER_HEARTBEAT_STALE_SECONDS = 90.0
+DEFAULT_LISTENER_MODE = "daemon"
+DEFAULT_LISTENER_AUTORESTART = True
+DEFAULT_LISTENER_MAX_START_FAILURES = 3
+DEFAULT_LISTENER_BACKOFF_SECONDS = (2.0, 5.0, 15.0)
+TOKEN_CONFLICT_MARKER = "token_conflict"
+LIFECYCLE_V2_ENV_KEY = "TELEGRAM_LIFECYCLE_V2"
+DEFAULT_LIFECYCLE_V2_ENABLED = True
+_SUPPORTED_SINGLETON_POLICIES = {"machine_kill_old", "strict_single_owner"}
 EVENT_TOKENS = {
     "question",
     "plan ready",
@@ -117,6 +125,8 @@ _TOOL_GROUP_LOW_LEVEL_INPUT = (
 _TOOL_GROUP_LIFECYCLE = (
     "telegram_listener_health",
     "start_telegram_listener",
+    "stop_telegram_listener",
+    "restart_telegram_listener",
     "repair_telegram_listener",
 )
 _TOOL_GROUP_DIAGNOSTICS = ("telegram_notify_capabilities",)
@@ -257,6 +267,42 @@ def _parse_non_negative_float_env(key: str, default: float) -> float:
     return parsed
 
 
+def _parse_bool_env(key: str, default: bool) -> bool:
+    raw = str(os.getenv(key) or "").strip().lower()
+    if not raw:
+        return bool(default)
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _parse_backoff_seconds_env(key: str, default: tuple[float, ...]) -> tuple[float, ...]:
+    raw = str(os.getenv(key) or "").strip()
+    if not raw:
+        return tuple(float(v) for v in default if float(v) >= 0)
+    values: list[float] = []
+    for token in raw.split(","):
+        part = str(token).strip()
+        if not part:
+            continue
+        value = float(part)
+        if value < 0:
+            raise ValueError(f"{key} values must be >= 0")
+        values.append(value)
+    if not values:
+        return tuple(float(v) for v in default if float(v) >= 0)
+    return tuple(values)
+
+
+def _is_lifecycle_v2_enabled() -> bool:
+    return _parse_bool_env(LIFECYCLE_V2_ENV_KEY, DEFAULT_LIFECYCLE_V2_ENABLED)
+
+
+def _is_token_conflict_text(text: str | None) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return TOKEN_CONFLICT_MARKER in lowered or ("409" in lowered and "conflict" in lowered)
+
+
 def _load_singleton_settings() -> tuple[str, int, float]:
     policy = str(os.getenv("TELEGRAM_SINGLETON_POLICY") or DEFAULT_SINGLETON_POLICY).strip().lower()
     retries = _parse_non_negative_int_env("TELEGRAM_SINGLETON_RETRIES", DEFAULT_SINGLETON_RETRIES)
@@ -269,16 +315,38 @@ def _load_singleton_settings() -> tuple[str, int, float]:
 
 def _acquire_server_singleton() -> SingletonLease:
     policy, retries, retry_delay_seconds = _load_singleton_settings()
-    if policy != DEFAULT_SINGLETON_POLICY:
+    if policy not in _SUPPORTED_SINGLETON_POLICIES:
         raise ValueError(
             f"Unsupported TELEGRAM_SINGLETON_POLICY: {policy}. "
-            f"Supported value: {DEFAULT_SINGLETON_POLICY}"
+            f"Supported values: {', '.join(sorted(_SUPPORTED_SINGLETON_POLICIES))}"
         )
+
+    if policy == "strict_single_owner":
+        lock_info = inspect_lock(SERVER_LOCK_NAME)
+        if str(lock_info.get("status")) == "stale":
+            try:
+                remove_lock_file(SERVER_LOCK_NAME)
+            except Exception:
+                pass
+        elif str(lock_info.get("status")) == "held":
+            owner_pid = _safe_int(lock_info.get("owner_pid"))
+            if owner_pid is not None and owner_pid != os.getpid():
+                raise SingletonAcquireError(
+                    "Server singleton is already held by another live process.",
+                    payload={
+                        "lock_name": SERVER_LOCK_NAME,
+                        "owner_pid": owner_pid,
+                        "lock_path": str(lock_info.get("lock_path")),
+                        "policy": policy,
+                    },
+                )
+
     lease = acquire_singleton_or_preempt(
         lock_name=SERVER_LOCK_NAME,
         owner_label=SERVER_LOCK_NAME,
         retries=retries,
         retry_delay_s=retry_delay_seconds,
+        preempt_alive_owner=(policy == "machine_kill_old"),
     )
     for replaced_pid in lease.preempted_pids:
         _stderr(f"telegram_notify_server preempted existing process pid={replaced_pid}")
@@ -389,16 +457,33 @@ def _is_listener_commandline_match(commandline: str | None, db_path: Path) -> bo
     has_script_fragment = any(frag in normalized for frag in _LISTENER_MODULE_FRAGMENTS)
     if not has_script_fragment:
         return False
+    return True
+
+
+def _is_listener_commandline_db_match(commandline: str | None, db_path: Path) -> bool:
+    if not _is_listener_commandline_match(commandline, db_path):
+        return False
     db_fragment = _normalize_for_match(str(db_path))
+    normalized = _normalize_for_match(commandline)
     return db_fragment in normalized
 
 
-def _is_matching_listener_process(pid: int | None, db_path: Path) -> bool:
+def _resolve_process_match_method(pid: int | None, db_path: Path) -> str:
     parsed_pid = _safe_int(pid)
     if parsed_pid is None or not singleton_is_process_alive(parsed_pid):
-        return False
+        return "none"
     commandline = _get_process_commandline(parsed_pid)
-    return _is_listener_commandline_match(commandline, db_path)
+    if commandline:
+        if _is_listener_commandline_db_match(commandline, db_path):
+            return "cmdline+db"
+        if _is_listener_commandline_match(commandline, db_path):
+            return "pid_only"
+        return "none"
+    return "pid_only"
+
+
+def _is_matching_listener_process(pid: int | None, db_path: Path) -> bool:
+    return _resolve_process_match_method(pid, db_path) != "none"
 
 
 def _derive_health_reason(
@@ -409,8 +494,14 @@ def _derive_health_reason(
     startup_confirmed: bool,
     heartbeat_age_seconds: float | None,
     lock_status: str,
+    last_error: str | None,
 ) -> tuple[str, str]:
     status = str(state_status or "stopped").strip().lower() or "stopped"
+    if _is_token_conflict_text(last_error) or status == TOKEN_CONFLICT_MARKER:
+        return (
+            TOKEN_CONFLICT_MARKER,
+            "Token conflict detected; stop other getUpdates consumers or use a separate bot token.",
+        )
     if running and startup_confirmed and status == "running":
         if heartbeat_age_seconds is not None and heartbeat_age_seconds > LISTENER_HEARTBEAT_STALE_SECONDS:
             return "heartbeat_stale", "Run repair_telegram_listener to refresh stale heartbeat state."
@@ -453,9 +544,13 @@ def _listener_health_payload(
     lock_path = resolve_lock_path(SINGLETON_LOCK_NAME)
     lock_info = inspect_lock(SINGLETON_LOCK_NAME)
     lock_status = str(lock_info.get("status") or "unknown")
+    lock_owner_pid = _safe_int(lock_info.get("owner_pid"))
+    lock_owner_alive = bool(lock_info.get("owner_alive"))
+    process_match_method = _resolve_process_match_method(pid_int, resolved_db_path)
 
     state_status = str(state.get("state_status") or "stopped").strip().lower() or "stopped"
     startup_confirmed = bool(state.get("startup_confirmed"))
+    last_error = state.get("last_error")
     health_reason, recommended_action = _derive_health_reason(
         running=running,
         pid=pid_int,
@@ -463,6 +558,7 @@ def _listener_health_payload(
         startup_confirmed=startup_confirmed,
         heartbeat_age_seconds=heartbeat_age_seconds,
         lock_status=lock_status,
+        last_error=str(last_error) if last_error is not None else None,
     )
 
     log_path = resolve_listener_log_path(None)
@@ -477,11 +573,18 @@ def _listener_health_payload(
         "state_status": state_status,
         "instance_id": state.get("instance_id"),
         "startup_confirmed": startup_confirmed,
-        "last_error": state.get("last_error"),
+        "last_error": last_error,
         "last_error_utc": state.get("last_error_utc"),
         "restart_count": int(state.get("restart_count") or 0),
+        "consecutive_start_failures": int(state.get("consecutive_start_failures") or 0),
+        "last_start_attempt_utc": state.get("last_start_attempt_utc"),
+        "last_start_failure_reason": state.get("last_start_failure_reason"),
         "lock_path": str(lock_path),
         "lock_status": lock_status,
+        "lock_owner_pid": lock_owner_pid,
+        "lock_owner_alive": lock_owner_alive,
+        "process_match_method": process_match_method,
+        "token_fingerprint": str(os.getenv("TELEGRAM_TOKEN_FINGERPRINT") or "").strip() or None,
         "health_reason": health_reason,
         "recommended_action": recommended_action,
         "log_path": str(log_path),
@@ -489,6 +592,71 @@ def _listener_health_payload(
     if include_log_tail:
         payload["log_tail"] = _tail_text(log_path, max(1, int(log_tail_lines)))
     return payload
+
+
+def _listener_mode() -> str:
+    raw = str(os.getenv("TELEGRAM_LISTENER_MODE") or DEFAULT_LISTENER_MODE).strip().lower()
+    return raw or DEFAULT_LISTENER_MODE
+
+
+def _listener_autorestart_enabled() -> bool:
+    return _parse_bool_env("TELEGRAM_LISTENER_AUTORESTART", DEFAULT_LISTENER_AUTORESTART)
+
+
+def _listener_max_start_failures() -> int:
+    return max(1, _parse_non_negative_int_env("TELEGRAM_LISTENER_MAX_START_FAILURES", DEFAULT_LISTENER_MAX_START_FAILURES))
+
+
+def _listener_backoff_schedule() -> tuple[float, ...]:
+    return _parse_backoff_seconds_env("TELEGRAM_LISTENER_BACKOFF_SECONDS", DEFAULT_LISTENER_BACKOFF_SECONDS)
+
+
+def _seconds_since(timestamp_iso: str | None) -> float | None:
+    parsed = _parse_iso(timestamp_iso)
+    if parsed is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - parsed).total_seconds())
+
+
+def _backoff_seconds_for_failure_count(failures: int, schedule: tuple[float, ...]) -> float:
+    if failures <= 0 or not schedule:
+        return 0.0
+    index = min(int(failures) - 1, len(schedule) - 1)
+    return max(0.0, float(schedule[index]))
+
+
+def _is_start_backoff_active(state: dict[str, Any]) -> tuple[bool, float]:
+    failures = int(state.get("consecutive_start_failures") or 0)
+    schedule = _listener_backoff_schedule()
+    cooldown = _backoff_seconds_for_failure_count(failures, schedule)
+    if cooldown <= 0:
+        return False, 0.0
+    elapsed = _seconds_since(str(state.get("last_start_attempt_utc") or ""))
+    if elapsed is None:
+        return True, cooldown
+    if elapsed >= cooldown:
+        return False, 0.0
+    return True, max(0.0, cooldown - elapsed)
+
+
+def _mark_listener_start_failure(*, db_path: Path, reason: str) -> dict[str, Any]:
+    state = get_listener_state(db_path)
+    failures = int(state.get("consecutive_start_failures") or 0)
+    return update_listener_state(
+        consecutive_start_failures=failures + 1,
+        last_start_attempt_utc=_utc_iso_now(),
+        last_start_failure_reason=str(reason or "unknown"),
+        db_path=db_path,
+    )
+
+
+def _mark_listener_start_success(*, db_path: Path) -> dict[str, Any]:
+    return update_listener_state(
+        consecutive_start_failures=0,
+        last_start_attempt_utc=_utc_iso_now(),
+        last_start_failure_reason=None,
+        db_path=db_path,
+    )
 
 
 def _spawn_listener_process(
@@ -620,6 +788,63 @@ def _apply_balanced_self_heal(
     return actions, errors
 
 
+def _candidate_listener_pids(db_path: Path) -> list[int]:
+    state = get_listener_state(db_path)
+    state_pid = _safe_int(state.get("pid"))
+    lock_info = inspect_lock(SINGLETON_LOCK_NAME)
+    lock_owner_pid = _safe_int(lock_info.get("owner_pid"))
+    candidates: list[int] = []
+    for pid in (lock_owner_pid, state_pid):
+        if pid is None:
+            continue
+        if pid not in candidates:
+            candidates.append(pid)
+    return candidates
+
+
+def _stop_listener_runtime(
+    *,
+    db_path: Path,
+    reason: str,
+    force: bool = False,
+) -> dict[str, Any]:
+    actions: list[str] = []
+    errors: list[str] = []
+
+    for pid in _candidate_listener_pids(db_path):
+        method = _resolve_process_match_method(pid, db_path)
+        if method == "none" and not bool(force):
+            actions.append(f"skip_terminate_pid:{pid}:not_matching_listener")
+            continue
+        if terminate_pid(pid):
+            actions.append(f"terminated_pid:{pid}:{method}")
+        else:
+            errors.append(f"failed_to_terminate_pid:{pid}:{method}")
+
+    lock_info = inspect_lock(SINGLETON_LOCK_NAME)
+    try:
+        removed = False
+        status = str(lock_info.get("status") or "unknown")
+        if status in {"stale", "held"}:
+            removed = remove_lock_file(SINGLETON_LOCK_NAME)
+        actions.append("removed_listener_lock" if removed else "listener_lock_retained_or_absent")
+    except Exception as exc:
+        errors.append(f"remove_listener_lock_failed:{exc}")
+
+    reset_listener_runtime_state(
+        state_status="stopped",
+        last_restart_reason=reason,
+        db_path=db_path,
+    )
+    actions.append("reset_runtime_state")
+    return {
+        "ok": len(errors) == 0,
+        "actions_taken": actions,
+        "errors": errors,
+        "diagnostics": _listener_health_payload(db_path, include_log_tail=True, log_tail_lines=20),
+    }
+
+
 def _start_listener_once(
     *,
     db_path: Path,
@@ -699,6 +924,67 @@ def _ensure_listener_running(
             "diagnostics": diagnostics,
         }
 
+    lifecycle_v2 = _is_lifecycle_v2_enabled()
+    state = get_listener_state(resolved_db_path)
+    if lifecycle_v2:
+        mode = _listener_mode()
+        if mode != "daemon":
+            diagnostics["health_reason"] = "listener_mode_manual"
+            diagnostics["recommended_action"] = (
+                "Listener auto-start is disabled in non-daemon mode. "
+                "Use start_telegram_listener/restart_telegram_listener explicitly."
+            )
+            return {
+                "ok": False,
+                "running": bool(diagnostics.get("running")),
+                "started": False,
+                "startup_confirmed": bool(diagnostics.get("startup_confirmed")),
+                "attempts": 0,
+                "diagnostics": diagnostics,
+            }
+
+        if not _listener_autorestart_enabled():
+            diagnostics["health_reason"] = "listener_autorestart_disabled"
+            diagnostics["recommended_action"] = "Set TELEGRAM_LISTENER_AUTORESTART=true or start listener manually."
+            return {
+                "ok": False,
+                "running": bool(diagnostics.get("running")),
+                "started": False,
+                "startup_confirmed": bool(diagnostics.get("startup_confirmed")),
+                "attempts": 0,
+                "diagnostics": diagnostics,
+            }
+
+        if str(diagnostics.get("health_reason") or "") == TOKEN_CONFLICT_MARKER:
+            diagnostics["recommended_action"] = (
+                "Token conflict detected; stop other getUpdates consumers or switch token."
+            )
+            return {
+                "ok": False,
+                "running": bool(diagnostics.get("running")),
+                "started": False,
+                "startup_confirmed": bool(diagnostics.get("startup_confirmed")),
+                "attempts": 0,
+                "diagnostics": diagnostics,
+            }
+
+        backoff_active, backoff_remaining = _is_start_backoff_active(state)
+        if backoff_active:
+            diagnostics["health_reason"] = "start_backoff_active"
+            diagnostics["recommended_action"] = (
+                f"Listener restart backoff active for {round(backoff_remaining, 2)}s; "
+                "use restart_telegram_listener for immediate retry."
+            )
+            diagnostics["backoff_remaining_seconds"] = round(backoff_remaining, 3)
+            return {
+                "ok": False,
+                "running": bool(diagnostics.get("running")),
+                "started": False,
+                "startup_confirmed": bool(diagnostics.get("startup_confirmed")),
+                "attempts": 0,
+                "diagnostics": diagnostics,
+            }
+
     max_attempts = max(1, _parse_non_negative_int_env("TELEGRAM_LISTENER_START_MAX_ATTEMPTS", LISTENER_START_MAX_ATTEMPTS))
     latest = diagnostics
     for attempt in range(1, max_attempts + 1):
@@ -718,6 +1004,9 @@ def _ensure_listener_running(
         )
         latest = dict(start_result.get("diagnostics") or {})
         if bool(start_result.get("started")) and bool(start_result.get("startup_confirmed")):
+            if lifecycle_v2:
+                _mark_listener_start_success(db_path=resolved_db_path)
+                latest = _listener_health_payload(resolved_db_path)
             return {
                 "ok": True,
                 "running": True,
@@ -727,9 +1016,50 @@ def _ensure_listener_running(
                 "diagnostics": latest,
             }
 
+        failure_reason = str(
+            latest.get("health_reason")
+            or latest.get("state_status")
+            or "startup_confirmation_timeout"
+        )
+        if lifecycle_v2:
+            _mark_listener_start_failure(db_path=resolved_db_path, reason=failure_reason)
+            state = get_listener_state(resolved_db_path)
+            if _is_token_conflict_text(
+                str(latest.get("last_error") or "")
+            ) or failure_reason == TOKEN_CONFLICT_MARKER:
+                latest = _listener_health_payload(resolved_db_path)
+                latest["recommended_action"] = (
+                    "Token conflict detected; stop other getUpdates consumers or switch token."
+                )
+                break
+            backoff_active, backoff_remaining = _is_start_backoff_active(state)
+            if backoff_active:
+                latest = _listener_health_payload(resolved_db_path)
+                latest["health_reason"] = "start_backoff_active"
+                latest["recommended_action"] = (
+                    f"Listener restart backoff active for {round(backoff_remaining, 2)}s; "
+                    "use restart_telegram_listener for immediate retry."
+                )
+                latest["backoff_remaining_seconds"] = round(backoff_remaining, 3)
+                break
+            max_failures = _listener_max_start_failures()
+            if int(state.get("consecutive_start_failures") or 0) >= max_failures:
+                latest = _listener_health_payload(resolved_db_path)
+                latest["health_reason"] = "max_start_failures_reached"
+                latest["recommended_action"] = (
+                    "Max start failures reached; use restart_telegram_listener after resolving root cause."
+                )
+                break
+
     latest = _listener_health_payload(resolved_db_path)
-    latest["health_reason"] = "startup_confirmation_timeout"
-    latest["recommended_action"] = "Run repair_telegram_listener(include_log_tail=true) and inspect errors."
+    if lifecycle_v2 and str(latest.get("health_reason") or "") == TOKEN_CONFLICT_MARKER:
+        latest["recommended_action"] = "Token conflict detected; stop other getUpdates consumers or switch token."
+    elif not lifecycle_v2 or str(latest.get("health_reason") or "") not in {
+        "max_start_failures_reached",
+        "start_backoff_active",
+    }:
+        latest["health_reason"] = "startup_confirmation_timeout"
+        latest["recommended_action"] = "Run repair_telegram_listener(include_log_tail=true) and inspect errors."
     return {
         "ok": False,
         "running": bool(latest.get("running")),
@@ -995,8 +1325,16 @@ def register_pending_prompt(
             record = updated_record
 
         listener_payload: dict[str, Any] | None = None
+        listener_warning: str | None = None
         if ensure_listener:
             listener_payload = _ensure_listener_running(db_path, self_heal=True)
+            if _is_lifecycle_v2_enabled() and not bool(listener_payload.get("ok")):
+                diagnostics = listener_payload.get("diagnostics") or {}
+                listener_warning = (
+                    "Prompt delivered but listener is unhealthy; "
+                    f"health_reason={diagnostics.get('health_reason')}. "
+                    "Use telegram_listener_health and restart_telegram_listener."
+                )
         return {
             "ok": bool(delivery.get("ok", True)),
             "prompt_id": record.get("prompt_id"),
@@ -1009,6 +1347,7 @@ def register_pending_prompt(
             "telegram_poll_id": record.get("telegram_poll_id"),
             "delivery_error": delivery.get("error"),
             "listener": listener_payload,
+            "listener_warning": listener_warning,
             "prompt": record,
         }
     except Exception as exc:
@@ -1152,6 +1491,69 @@ def start_telegram_listener(
         }
     except Exception as exc:
         _stderr(f"telegram_notify_server start_telegram_listener error: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+@SERVER.tool(
+    name="stop_telegram_listener",
+    description="Stop the Telegram reply listener daemon and reset runtime state.",
+)
+def stop_telegram_listener(
+    db_path: str | None = None,
+    force: bool = False,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    try:
+        resolved_db_path = resolve_inbox_db_path(initialize_inbox_db(db_path))
+        payload = _stop_listener_runtime(
+            db_path=resolved_db_path,
+            reason=str(reason or "manual_stop").strip() or "manual_stop",
+            force=bool(force),
+        )
+        return {
+            "ok": bool(payload.get("ok")),
+            "actions_taken": payload.get("actions_taken"),
+            "errors": payload.get("errors"),
+            "diagnostics": payload.get("diagnostics"),
+        }
+    except Exception as exc:
+        _stderr(f"telegram_notify_server stop_telegram_listener error: {exc}")
+        return {"ok": False, "error": str(exc)}
+
+
+@SERVER.tool(
+    name="restart_telegram_listener",
+    description="Deterministically restart the Telegram reply listener daemon with health confirmation.",
+)
+def restart_telegram_listener(
+    db_path: str | None = None,
+    reason: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    try:
+        resolved_db_path = resolve_inbox_db_path(initialize_inbox_db(db_path))
+        restart_reason = str(reason or "manual_restart").strip() or "manual_restart"
+        stop_payload = _stop_listener_runtime(
+            db_path=resolved_db_path,
+            reason=f"{restart_reason}:stop",
+            force=bool(force),
+        )
+        # Explicit restart should bypass cooldown inherited from previous failures.
+        update_listener_state(
+            consecutive_start_failures=0,
+            last_start_attempt_utc=None,
+            last_start_failure_reason=None,
+            db_path=resolved_db_path,
+        )
+        start_payload = _ensure_listener_running(resolved_db_path, self_heal=True)
+        return {
+            "ok": bool(stop_payload.get("ok")) and bool(start_payload.get("ok")),
+            "stop": stop_payload,
+            "start": start_payload,
+            "diagnostics": start_payload.get("diagnostics"),
+        }
+    except Exception as exc:
+        _stderr(f"telegram_notify_server restart_telegram_listener error: {exc}")
         return {"ok": False, "error": str(exc)}
 
 
@@ -1485,6 +1887,7 @@ def telegram_notify_capabilities() -> dict[str, Any]:
             "notifications": True,
             "pending_prompts": True,
             "listener_lifecycle": True,
+            "listener_stop_restart": True,
             "sync_wait_for_prompt": True,
         },
     }

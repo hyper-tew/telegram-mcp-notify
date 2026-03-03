@@ -199,3 +199,33 @@ def test_run_listener_marks_error_on_preflight_failure(monkeypatch, tmp_path) ->
         raise AssertionError("run_listener should raise on preflight failure")
 
     assert any(call.get("state_status") == "error" for call in updates)
+
+
+def test_run_listener_marks_token_conflict_on_preflight_conflict(monkeypatch, tmp_path) -> None:
+    updates: list[dict[str, object]] = []
+    original_update = listener.update_listener_state
+
+    def _capture_update_listener_state(**kwargs):
+        updates.append(dict(kwargs))
+        return original_update(**kwargs)
+
+    monkeypatch.setattr(listener, "httpx", _FakeHttpxModule)
+    monkeypatch.setattr(listener, "load_telegram_config", lambda: TelegramConfig(bot_token="token", chat_id="trusted-chat"))
+    monkeypatch.setattr(listener, "_preflight_get_updates", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("409 Conflict")))
+    monkeypatch.setattr(listener, "update_listener_state", _capture_update_listener_state)
+
+    db_path = tmp_path / "telegram_inbox.db"
+    try:
+        listener.run_listener(
+            db_path=str(db_path),
+            instance_id="li_test_conflict",
+            log_path=str(tmp_path / "listener.log"),
+            poll_timeout_seconds=1,
+            error_sleep_seconds=0.01,
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("run_listener should raise on preflight token conflict")
+
+    assert any(call.get("state_status") == "token_conflict" for call in updates)

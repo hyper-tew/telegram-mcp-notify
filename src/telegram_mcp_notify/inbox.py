@@ -188,7 +188,10 @@ def initialize_inbox_db(db_path: str | Path | None = None) -> Path:
                 last_error_utc TEXT,
                 restart_count INTEGER NOT NULL DEFAULT 0,
                 last_restart_reason TEXT,
-                started_at_utc TEXT
+                started_at_utc TEXT,
+                consecutive_start_failures INTEGER NOT NULL DEFAULT 0,
+                last_start_attempt_utc TEXT,
+                last_start_failure_reason TEXT
             );
             """
         )
@@ -226,6 +229,9 @@ def initialize_inbox_db(db_path: str | Path | None = None) -> Path:
                 "restart_count": "restart_count INTEGER NOT NULL DEFAULT 0",
                 "last_restart_reason": "last_restart_reason TEXT",
                 "started_at_utc": "started_at_utc TEXT",
+                "consecutive_start_failures": "consecutive_start_failures INTEGER NOT NULL DEFAULT 0",
+                "last_start_attempt_utc": "last_start_attempt_utc TEXT",
+                "last_start_failure_reason": "last_start_failure_reason TEXT",
             },
         )
         connection.execute(
@@ -752,7 +758,10 @@ def get_listener_state(db_path: str | Path | None = None) -> dict[str, Any]:
                 last_error_utc,
                 restart_count,
                 last_restart_reason,
-                started_at_utc
+                started_at_utc,
+                consecutive_start_failures,
+                last_start_attempt_utc,
+                last_start_failure_reason
             FROM listener_state
             WHERE singleton_id = 1
             """
@@ -771,6 +780,9 @@ def get_listener_state(db_path: str | Path | None = None) -> dict[str, Any]:
             "restart_count": 0,
             "last_restart_reason": None,
             "started_at_utc": None,
+            "consecutive_start_failures": 0,
+            "last_start_attempt_utc": None,
+            "last_start_failure_reason": None,
         }
     return {
         "last_update_id": int(row["last_update_id"] or 0),
@@ -785,6 +797,9 @@ def get_listener_state(db_path: str | Path | None = None) -> dict[str, Any]:
         "restart_count": int(row["restart_count"] or 0),
         "last_restart_reason": row["last_restart_reason"],
         "started_at_utc": row["started_at_utc"],
+        "consecutive_start_failures": int(row["consecutive_start_failures"] or 0),
+        "last_start_attempt_utc": row["last_start_attempt_utc"],
+        "last_start_failure_reason": row["last_start_failure_reason"],
     }
 
 
@@ -802,6 +817,9 @@ def update_listener_state(
     restart_count: int | object = _UNSET,
     last_restart_reason: str | None | object = _UNSET,
     started_at_utc: str | None | object = _UNSET,
+    consecutive_start_failures: int | object = _UNSET,
+    last_start_attempt_utc: str | None | object = _UNSET,
+    last_start_failure_reason: str | None | object = _UNSET,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Update listener state fields in the database."""
@@ -846,6 +864,15 @@ def update_listener_state(
     if started_at_utc is not _UNSET:
         updates.append("started_at_utc = ?")
         params.append(str(started_at_utc) if started_at_utc is not None else None)
+    if consecutive_start_failures is not _UNSET:
+        updates.append("consecutive_start_failures = ?")
+        params.append(int(consecutive_start_failures))  # type: ignore[arg-type]
+    if last_start_attempt_utc is not _UNSET:
+        updates.append("last_start_attempt_utc = ?")
+        params.append(str(last_start_attempt_utc) if last_start_attempt_utc is not None else None)
+    if last_start_failure_reason is not _UNSET:
+        updates.append("last_start_failure_reason = ?")
+        params.append(str(last_start_failure_reason) if last_start_failure_reason is not None else None)
     if updates:
         with _connect(db_path) as connection:
             connection.execute(f"UPDATE listener_state SET {', '.join(updates)} WHERE singleton_id = 1", tuple(params))
@@ -886,6 +913,9 @@ def reset_listener_runtime_state(
         last_error_utc=None,
         last_restart_reason=last_restart_reason,
         started_at_utc=None,
+        consecutive_start_failures=0,
+        last_start_attempt_utc=None,
+        last_start_failure_reason=None,
         db_path=db_path,
     )
 

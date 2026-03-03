@@ -167,6 +167,9 @@ def test_listener_state_extended_fields_and_helpers(tmp_path) -> None:
     assert state["state_status"] == "stopped"
     assert state["startup_confirmed"] == 0
     assert state["restart_count"] == 0
+    assert state["consecutive_start_failures"] == 0
+    assert state["last_start_attempt_utc"] is None
+    assert state["last_start_failure_reason"] is None
 
     update_listener_state(
         pid=1234,
@@ -180,6 +183,7 @@ def test_listener_state_extended_fields_and_helpers(tmp_path) -> None:
     assert running["instance_id"] == "li_test"
     assert running["state_status"] == "running"
     assert running["startup_confirmed"] == 1
+    assert running["consecutive_start_failures"] == 0
 
     set_listener_error(error_text="boom", state_status="degraded", db_path=db_path)
     degraded = get_listener_state(db_path)
@@ -196,6 +200,9 @@ def test_listener_state_extended_fields_and_helpers(tmp_path) -> None:
     assert reset_state["pid"] is None
     assert reset_state["state_status"] == "stopped"
     assert reset_state["startup_confirmed"] == 0
+    assert reset_state["consecutive_start_failures"] == 0
+    assert reset_state["last_start_attempt_utc"] is None
+    assert reset_state["last_start_failure_reason"] is None
 
 
 def test_parse_iso_handles_unexpected_parser_exception(monkeypatch) -> None:
