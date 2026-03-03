@@ -4,6 +4,35 @@
 
 - 2026-03-03: Initial rewrite -- credentials in env blocks, correct GitHub URL
 - 2026-03-03 Update 2 -- uvx zero-install, skills consolidation, install-from-GitHub instructions
+- 2026-03-03 Update 3 -- Plan Mode Telegram-first clarification routing in skill/docs
+
+---
+
+## Update 3 -- 2026-03-03
+
+- **Date Applied:** 2026-03-03
+- **Motivation:** Ensure repository-local skill/docs match the intended Codex Plan Mode behavior: Telegram-first user questions with explicit in-UI fallback.
+- **Main Modified Files:**
+  - `.agents/skills/telegram-notify/SKILL.md`
+  - `README.md`
+  - `docs/agent_change_logs/readmeSetupInstructions_2026-03-03.md`
+- **Change Summary:**
+  1. Added a mandatory "Plan Mode Question Routing" section to `.agents/skills/telegram-notify/SKILL.md`.
+  2. Documented deterministic routing in the skill: binary -> `ask_user_confirmation`, 3+ options -> `ask_user_choice`, and text-only for true free-form needs.
+  3. Added wait/fallback behavior to the skill: `wait_pending_prompt` first, `check_pending_prompt` follow-up, then explicit `request_user_input` fallback when Telegram input mode is unavailable/fails.
+  4. Added matching policy notes in README under "Skill/MCP sanity check".
+- **Before/After (Key Snippet):**
+
+```diff
++## Plan Mode Question Routing (Mandatory)
++When a Plan Mode question requires user input, Telegram is the primary channel and UI questions are fallback-only.
++...
++- If unavailable/failure/timeout:
++  - Emit one explicit warning in chat
++  - Ask exactly once via request_user_input
+```
+
+- **Notes/Follow-ups:** Restart Codex/Cursor after skill updates so the runtime reloads the revised skill text.
 
 ---
 

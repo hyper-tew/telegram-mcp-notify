@@ -36,6 +36,7 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 ## Quick Start -- Cursor
 
 No pre-installation required. Cursor launches the server on demand via `uvx`.
+This path requires `uvx` on PATH (`uvx --version`). If `uvx` is unavailable, use the pip-based setup in the next section.
 
 Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global):
 
@@ -60,11 +61,14 @@ Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for glob
 
 Replace the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` values with your own credentials.
 
+If you currently have `"command": "telegram-mcp-notify"` in Cursor config and see `spawn telegram-mcp-notify ENOENT`, switch to the `uvx` config above.
+
 Restart Cursor after saving the file.
 
 ## Quick Start -- Codex
 
 No pre-installation required. Codex launches the server on demand via `uvx`.
+This path requires `uvx` on PATH (`uvx --version`). If `uvx` is unavailable, use the pip-based setup in the next section.
 
 **Option A -- Edit config.toml**
 
@@ -108,7 +112,7 @@ pip install ./telegram-mcp-notify
 pip install -e "./telegram-mcp-notify[dev]"
 ```
 
-Then reference the command directly (no `uvx` wrapper needed):
+After pre-install, prefer launching through Python module mode (more reliable on Windows PATH setups):
 
 **Cursor** (`.cursor/mcp.json`):
 
@@ -116,8 +120,8 @@ Then reference the command directly (no `uvx` wrapper needed):
 {
   "mcpServers": {
     "telegram_notify": {
-      "command": "telegram-mcp-notify",
-      "args": [],
+      "command": "python",
+      "args": ["-m", "telegram_mcp_notify.server"],
       "env": {
         "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
         "TELEGRAM_CHAT_ID": "123456789"
@@ -131,13 +135,15 @@ Then reference the command directly (no `uvx` wrapper needed):
 
 ```toml
 [mcp_servers.telegram_notify]
-command = "telegram-mcp-notify"
-args = []
+command = "python"
+args = ["-m", "telegram_mcp_notify.server"]
 
 [mcp_servers.telegram_notify.env]
 TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
 TELEGRAM_CHAT_ID = "123456789"
 ```
+
+You can still use `command = "telegram-mcp-notify"` only if that executable is on PATH for the app process (verify with `where telegram-mcp-notify` on Windows or `which telegram-mcp-notify` on Linux/macOS).
 
 ---
 
@@ -266,6 +272,11 @@ Restart Cursor or Codex after installing the skill.
    - Full input mode should expose `ask_user` and `check_pending_prompt` (plus listener lifecycle tools).
    - If only `send_telegram_notification` is exposed, treat it as notify-only mode and do not claim reply listening.
 3. Restart Codex/Cursor after MCP or skill file changes.
+4. Plan Mode clarification routing policy:
+   - In Plan Mode, direct clarification questions should be sent through Telegram input tools first.
+   - Recommended type-aware routing: binary -> `ask_user_confirmation`; 3+ options -> `ask_user_choice`; free-form only when options are not feasible.
+   - Wait for reply using `wait_pending_prompt` (then `check_pending_prompt` if needed).
+   - If Telegram input tools are unavailable or fail, explicitly state the reason and fall back to one in-UI question (`request_user_input`).
 
 ---
 
@@ -320,6 +331,8 @@ Restart Cursor or Codex after installing the skill.
 | "heartbeat_stale" | Listener froze or network issue | Call `repair_telegram_listener(restart=true)` |
 | Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |
 | Inline button not responding | Callback not matched | Ensure listener is running via `telegram_listener_health` |
+| `Client error for command spawn telegram-mcp-notify ENOENT` | Executable not installed or not on app PATH | Use `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify telegram-mcp-notify` in MCP config, or switch to `python -m telegram_mcp_notify.server` |
+| `Client error for command spawn uvx ENOENT` | `uv`/`uvx` is not installed or not on app PATH | Install `uv` and restart the app, or use the pip-based `python -m telegram_mcp_notify.server` configuration |
 
 ## Data Paths
 

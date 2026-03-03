@@ -49,6 +49,26 @@ The one-line helper message must be capability-accurate.
 - Good (notify-only mode): `Using telegram-notify in notify-only mode (reply-listener tools are unavailable in this runtime).`
 - Bad: claiming reply listening/input collection when only `send_telegram_notification` is exposed.
 
+## Plan Mode Question Routing (Mandatory)
+
+When a Plan Mode question requires user input, Telegram is the primary channel and UI questions are fallback-only.
+
+1. Preflight capabilities:
+   - Prefer `telegram_notify_capabilities`.
+   - If unavailable, infer from exposed tools (`ask_user*`, `wait_pending_prompt`, `check_pending_prompt`).
+2. Choose question tool by decision type:
+   - Binary decision: `ask_user_confirmation`
+   - 3+ concrete options: `ask_user_choice`
+   - Free-form answer only when options are not feasible: `ask_user`
+3. Ask through Telegram and capture `prompt_id`.
+4. Wait deterministically:
+   - First: `wait_pending_prompt(session_id, prompt_id, timeout_seconds=180, consume=true)`
+   - If still ambiguous, one follow-up: `check_pending_prompt(session_id, prompt_id, consume=true)`
+5. If unavailable/failure/timeout:
+   - Emit one explicit warning in chat: `Telegram input unavailable (<reason>); falling back to in-UI question.`
+   - Ask exactly once via `request_user_input` with equivalent choices/defaults.
+   - Preserve semantics: fallback choices and recommendation ordering must match Telegram intent.
+
 ## When to Use
 
 Use Telegram notification tools at these checkpoints:
