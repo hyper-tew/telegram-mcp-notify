@@ -1,0 +1,313 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from telegram_mcp_notify.inbox import mark_prompt_resolved
+from telegram_mcp_notify import server
+
+
+def test_infer_task_name_from_pipe_message_uses_descriptive_segment() -> None:
+    message = "PROGRESS | aem-lit-data6 | Test telegram notification\ntimestamp_cn=2026-03-02T10:00:00+08:00"
+    assert server._infer_task_name_from_message(message) == "Test telegram notification"
+
+
+def test_resolve_task_name_uses_inferred_message_when_task_is_missing(monkeypatch) -> None:
+    for key in ("CODEX_TASK_NAME", "CODEX_TASK", "TASK_NAME", "TASK", "CODEX_SESSION_TITLE"):
+        monkeypatch.delenv(key, raising=False)
+    assert (
+        server._resolve_task_name(message="FINAL | aem-lit-data6 | test v4 graph with DOI")
+        == "test v4 graph with DOI"
+    )
+
+
+def test_resolve_task_name_uses_default_when_no_other_source(monkeypatch) -> None:
+    for key in ("CODEX_TASK_NAME", "CODEX_TASK", "TASK_NAME", "TASK", "CODEX_SESSION_TITLE"):
+        monkeypatch.delenv(key, raising=False)
+    assert server._resolve_task_name(message="timestamp_cn=2026-03-02T10:00:00+08:00") == server.DEFAULT_TASK_NAME
+
+
+def test_register_pending_prompt_and_check_pending_prompt_flow(monkeypatch, tmp_path) -> None:
+    sent: dict[str, object] = {}
+
+    def _fake_send(message, *, config, max_retries=1):
+        sent["message"] = message
+        return {"ok": True, "status_code": 200, "message_id": 88, "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_message", _fake_send)
+    monkeypatch.setattr(
+        server,
+        "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {
+            "ok": True, "running": True, "started": False,
+            "startup_confirmed": True, "attempts": 0, "diagnostics": {},
+        },
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    created = server.register_pending_prompt(
+        session_id="session-1",
+        prompt_text="Please approve deployment",
+        prompt_id="prompt-1",
+        run_id="run-1",
+        prompt_kind="approval",
+        send_notification=True,
+        ensure_listener=True,
+        db_path=db_path,
+    )
+    assert created["ok"] is True
+    assert created["prompt_id"] == "prompt-1"
+    assert created["status"] == "waiting"
+    assert created["telegram_message_id"] == 88
+    assert "ANSWER prompt-1 <text>" in str(sent.get("message"))
+
+    waiting = server.check_pending_prompt(session_id="session-1", prompt_id="prompt-1", db_path=db_path)
+    assert waiting["ok"] is True
+    assert waiting["status"] == "waiting"
+
+    mark_prompt_resolved(
+        prompt_id="prompt-1",
+        response_type="approve",
+        response_text="approve",
+        db_path=db_path,
+    )
+    resolved = server.check_pending_prompt(session_id="session-1", prompt_id="prompt-1", db_path=db_path)
+    assert resolved["status"] == "resolved"
+
+    consumed = server.check_pending_prompt(session_id="session-1", prompt_id="prompt-1", consume=True, db_path=db_path)
+    assert consumed["status"] == "consumed"
+
+
+def test_list_pending_prompts_filters_status(tmp_path) -> None:
+    db_path = str(tmp_path / "telegram_inbox.db")
+    created = server.register_pending_prompt(
+        session_id="session-2", prompt_id="prompt-2", prompt_text="Need answer",
+        send_notification=False, ensure_listener=False, db_path=db_path,
+    )
+    assert created["status"] == "waiting"
+    mark_prompt_resolved(prompt_id="prompt-2", response_type="answer", response_text="done", db_path=db_path)
+
+    server.register_pending_prompt(
+        session_id="session-2", prompt_id="prompt-3", prompt_text="still waiting",
+        send_notification=False, ensure_listener=False, db_path=db_path,
+    )
+
+    resolved = server.list_pending_prompts(session_id="session-2", status_filter="resolved", db_path=db_path)
+    assert resolved["ok"] is True
+    assert resolved["count"] == 1
+    assert resolved["pending_prompts"][0]["prompt_id"] == "prompt-2"
+
+
+def test_register_pending_prompt_poll_mode_persists_poll_id(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_send_poll(question, options, *, allows_multiple_answers=False, config, max_retries=1):
+        captured["question"] = question
+        captured["options"] = options
+        captured["allows_multiple_answers"] = allows_multiple_answers
+        return {"ok": True, "status_code": 200, "message_id": 99, "poll_id": "poll-1", "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_poll", _fake_send_poll)
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {"ok": True, "running": True, "started": False, "startup_confirmed": True, "attempts": 0, "diagnostics": {}},
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    created = server.register_pending_prompt(
+        session_id="session-poll", prompt_id="prompt-poll", prompt_text="Pick two",
+        input_mode="poll", choices=["A", "B", "C"], allows_multiple_answers=True,
+        send_notification=True, ensure_listener=False, db_path=db_path,
+    )
+    assert created["ok"] is True
+    assert created["input_mode"] == "poll"
+    assert created["telegram_poll_id"] == "poll-1"
+    assert captured["question"] == "Pick two"
+    assert captured["allows_multiple_answers"] is True
+
+
+def test_register_pending_prompt_inline_mode_builds_callback_buttons(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_send_inline(text, inline_keyboard, *, config, max_retries=1):
+        captured["text"] = text
+        captured["inline_keyboard"] = inline_keyboard
+        return {"ok": True, "status_code": 200, "message_id": 101, "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_inline_keyboard", _fake_send_inline)
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {"ok": True, "running": True, "started": False, "startup_confirmed": True, "attempts": 0, "diagnostics": {}},
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    created = server.register_pending_prompt(
+        session_id="session-inline", prompt_id="prompt-inline", prompt_text="Pick one",
+        input_mode="inline", choices=["X", "Y", "Z"], inline_columns=2,
+        send_notification=True, ensure_listener=False, db_path=db_path,
+    )
+    assert created["ok"] is True
+    assert created["input_mode"] == "inline"
+    assert "\u2753 QUESTION |" in str(captured["text"])
+    keyboard = captured["inline_keyboard"]
+    assert isinstance(keyboard, list)
+    assert keyboard[0][0]["callback_data"].startswith("c:cb_")
+
+
+def test_ask_user_sends_text_question(monkeypatch, tmp_path) -> None:
+    sent: dict[str, object] = {}
+
+    def _fake_send(message, *, config, max_retries=1):
+        sent["message"] = message
+        return {"ok": True, "status_code": 200, "message_id": 200, "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_message", _fake_send)
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {"ok": True, "running": True, "started": False, "startup_confirmed": True, "attempts": 0, "diagnostics": {}},
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    result = server.ask_user(
+        question="Should I proceed with deployment?",
+        session_id="session-ask",
+        db_path=db_path,
+    )
+    assert result["ok"] is True
+    assert result["prompt_id"] is not None
+    assert result["status"] == "waiting"
+    assert "Should I proceed with deployment?" in str(sent.get("message"))
+
+
+def test_ask_user_confirmation_sends_inline_yes_no(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_send_inline(text, inline_keyboard, *, config, max_retries=1):
+        captured["text"] = text
+        captured["keyboard"] = inline_keyboard
+        return {"ok": True, "status_code": 200, "message_id": 201, "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_inline_keyboard", _fake_send_inline)
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {"ok": True, "running": True, "started": False, "startup_confirmed": True, "attempts": 0, "diagnostics": {}},
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    result = server.ask_user_confirmation(
+        question="Approve this change?",
+        session_id="session-confirm",
+        db_path=db_path,
+    )
+    assert result["ok"] is True
+    assert result["input_mode"] == "inline"
+    buttons = [btn["text"] for row in captured["keyboard"] for btn in row]
+    assert "Yes" in buttons
+    assert "No" in buttons
+
+
+def test_ask_user_choice_auto_selects_mode(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_send_inline(text, inline_keyboard, *, config, max_retries=1):
+        captured["mode"] = "inline"
+        return {"ok": True, "status_code": 200, "message_id": 202, "error": None}
+
+    def _fake_send_poll(question, options, *, allows_multiple_answers=False, config, max_retries=1):
+        captured["mode"] = "poll"
+        return {"ok": True, "status_code": 200, "message_id": 203, "poll_id": "p1", "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_inline_keyboard", _fake_send_inline)
+    monkeypatch.setattr(server, "send_telegram_poll", _fake_send_poll)
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {"ok": True, "running": True, "started": False, "startup_confirmed": True, "attempts": 0, "diagnostics": {}},
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+
+    result = server.ask_user_choice(
+        question="Pick one", choices=["A", "B", "C"],
+        session_id="session-choice", db_path=db_path,
+    )
+    assert result["ok"] is True
+    assert captured["mode"] == "inline"
+
+    captured.clear()
+    result = server.ask_user_choice(
+        question="Pick many", choices=["A", "B", "C", "D", "E"],
+        session_id="session-choice", db_path=db_path,
+    )
+    assert result["ok"] is True
+    assert captured["mode"] == "poll"
+
+
+def test_cancel_prompt_cancels_waiting_prompt(tmp_path) -> None:
+    db_path = str(tmp_path / "telegram_inbox.db")
+    server.register_pending_prompt(
+        session_id="session-cancel", prompt_id="prompt-cancel", prompt_text="Question",
+        send_notification=False, ensure_listener=False, db_path=db_path,
+    )
+    result = server.tool_cancel_prompt(session_id="session-cancel", prompt_id="prompt-cancel", db_path=db_path)
+    assert result["ok"] is True
+    assert result["current_status"] == "cancelled"
+
+
+def test_get_recent_messages_returns_empty_list(tmp_path) -> None:
+    db_path = str(tmp_path / "telegram_inbox.db")
+    from telegram_mcp_notify.inbox import initialize_inbox_db
+    initialize_inbox_db(db_path)
+    result = server.tool_get_recent_messages(limit=5, db_path=db_path)
+    assert result["ok"] is True
+    assert result["count"] == 0
+    assert result["messages"] == []
+
+
+def test_run_server_with_singleton_invokes_server_and_releases_lease(monkeypatch) -> None:
+    lease = SimpleNamespace(preempted_pids=(), released=False)
+    called: dict[str, object] = {}
+    fake_server = SimpleNamespace(run=lambda transport: called.setdefault("transport", transport))
+
+    monkeypatch.setattr(server, "_acquire_server_singleton", lambda: lease)
+    monkeypatch.setattr(server, "SERVER", fake_server)
+    monkeypatch.setattr(server, "release_singleton", lambda _lease: called.setdefault("released", True))
+    monkeypatch.setattr(server, "_stderr", lambda _message: None)
+
+    assert server._run_server_with_singleton() == 0
+    assert called["transport"] == "stdio"
+    assert called["released"] is True
+
+
+def test_repair_telegram_listener_restart_returns_after_snapshot(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    monkeypatch.setattr(server, "initialize_inbox_db", lambda _db_path=None: db_path)
+    monkeypatch.setattr(server, "resolve_inbox_db_path", lambda value: Path(value))
+    monkeypatch.setattr(
+        server, "_listener_health_payload",
+        lambda _db_path, **_kwargs: {
+            "ok": True, "running": False, "state_status": "stopped",
+            "startup_confirmed": False, "lock_status": "stale", "health_reason": "stale_lock",
+        },
+    )
+    monkeypatch.setattr(
+        server, "_apply_balanced_self_heal",
+        lambda **_kwargs: (["removed_stale_lock", "reset_runtime_state"], []),
+    )
+    monkeypatch.setattr(
+        server, "_ensure_listener_running",
+        lambda *_args, **_kwargs: {
+            "ok": True, "running": True, "started": True, "startup_confirmed": True, "attempts": 1,
+            "diagnostics": {"running": True, "state_status": "running", "startup_confirmed": True, "health_reason": "healthy"},
+        },
+    )
+
+    result = server.repair_telegram_listener(db_path=str(db_path), restart=True, reason="test")
+    assert result["ok"] is True
+    assert "removed_stale_lock" in result["actions_taken"]
+    assert "restart_attempted" in result["actions_taken"]
