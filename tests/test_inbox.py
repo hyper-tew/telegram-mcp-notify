@@ -14,10 +14,10 @@ from telegram_mcp_notify.inbox import (
     expire_prompt_if_needed,
     get_waiting_prompt_by_callback_namespace,
     get_waiting_prompt_by_poll_id,
+    get_pending_prompt,
     get_listener_state,
     increment_listener_restart_count,
     initialize_inbox_db,
-    list_pending_prompts,
     mark_prompt_resolved,
     parse_reply_command,
     reset_listener_runtime_state,
@@ -102,9 +102,9 @@ def test_expire_prompt_if_needed_marks_waiting_record_expired(tmp_path) -> None:
     assert expired is not None
     assert expired["status"] == STATUS_EXPIRED
 
-    rows = list_pending_prompts(session_id="session-1", db_path=db_path)
-    assert len(rows) == 1
-    assert rows[0]["status"] == STATUS_EXPIRED
+    row = get_pending_prompt(prompt_id="prompt-expired", session_id="session-1", db_path=db_path)
+    assert row is not None
+    assert row["status"] == STATUS_EXPIRED
 
 
 def test_waiting_prompt_lookup_supports_poll_and_callback_namespace(tmp_path) -> None:

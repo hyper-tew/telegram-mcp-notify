@@ -320,13 +320,6 @@ def _coerce_response_payload(payload: Mapping[str, Any] | None) -> str | None:
     return json.dumps(dict(payload), ensure_ascii=True)
 
 
-def _normalize_status(status: str | None) -> str:
-    key = str(status or STATUS_WAITING).strip().lower()
-    if key not in _SUPPORTED_STATUS:
-        return STATUS_WAITING
-    return key
-
-
 def _normalize_input_mode(input_mode: str | None) -> str:
     key = str(input_mode or INPUT_MODE_TEXT).strip().lower()
     if key not in _SUPPORTED_INPUT_MODE:
@@ -536,28 +529,6 @@ def get_waiting_prompt_by_callback_namespace(
     return _row_to_dict(row)
 
 
-def list_pending_prompts(
-    *,
-    session_id: str,
-    status_filter: str | None = None,
-    limit: int = 20,
-    db_path: str | Path | None = None,
-) -> list[dict[str, Any]]:
-    """List pending prompts for a session."""
-    capped_limit = max(1, min(int(limit), 200))
-    query = "SELECT * FROM pending_prompts WHERE session_id = ?"
-    params: list[Any] = [str(session_id).strip()]
-    normalized_status = _normalize_status(status_filter) if status_filter else None
-    if normalized_status and status_filter:
-        query += " AND status = ?"
-        params.append(normalized_status)
-    query += " ORDER BY created_at_utc DESC LIMIT ?"
-    params.append(capped_limit)
-    with _connect(db_path) as connection:
-        rows = connection.execute(query, tuple(params)).fetchall()
-    return [payload for payload in (_row_to_dict(row) for row in rows) if payload is not None]
-
-
 def mark_prompt_resolved(
     *,
     prompt_id: str,
@@ -621,24 +592,6 @@ def consume_prompt(
     return get_pending_prompt(prompt_id=prompt_id, session_id=session_id, db_path=db_path)
 
 
-def cancel_prompt(
-    *,
-    prompt_id: str,
-    session_id: str | None = None,
-    db_path: str | Path | None = None,
-) -> dict[str, Any] | None:
-    """Cancel a waiting prompt."""
-    with _connect(db_path) as connection:
-        query = "UPDATE pending_prompts SET status = ? WHERE prompt_id = ? AND status = ?"
-        params: list[Any] = [STATUS_CANCELLED, str(prompt_id).strip(), STATUS_WAITING]
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(str(session_id).strip())
-        connection.execute(query, tuple(params))
-        connection.commit()
-    return get_pending_prompt(prompt_id=prompt_id, session_id=session_id, db_path=db_path)
-
-
 def expire_prompt_if_needed(
     *,
     prompt_id: str,
@@ -665,21 +618,6 @@ def expire_prompt_if_needed(
         )
         connection.commit()
     return get_pending_prompt(prompt_id=prompt_id, session_id=session_id, db_path=db_path)
-
-
-def get_recent_inbound_messages(
-    *,
-    limit: int = 10,
-    db_path: str | Path | None = None,
-) -> list[dict[str, Any]]:
-    """Retrieve recent inbound messages from the inbox."""
-    capped_limit = max(1, min(int(limit), 200))
-    with _connect(db_path) as connection:
-        rows = connection.execute(
-            "SELECT * FROM inbound_messages ORDER BY update_id DESC LIMIT ?",
-            (capped_limit,),
-        ).fetchall()
-    return [dict(row) for row in rows]
 
 
 def record_inbound_message(

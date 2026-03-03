@@ -14,7 +14,7 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 
 - **Outbound notifications**: Send structured Telegram messages for questions, plans, errors, final results, and attention-needed events.
 - **Inbound replies**: Receive user responses via text commands, inline keyboards, or polls.
-- **High-level input tools**: `ask_user`, `ask_user_confirmation`, `ask_user_choice` for simplified user interaction.
+- **Core input tools**: `ask_user_confirmation` and `ask_user_choice` for interactive decisions.
 - **Singleton lifecycle**: File-based locking ensures only one server/listener runs at a time.
 - **Self-healing listener**: Automatic stale PID/lock cleanup and restart.
 - **Cross-platform**: Works on Windows (msvcrt) and POSIX (fcntl).
@@ -282,12 +282,12 @@ Restart Cursor or Codex after installing the skill.
    - `codex mcp get telegram_notify`
    - Ensure the command points to the full server entrypoint (`telegram-mcp-notify`, `uvx ... telegram-mcp-notify`, or your wrapper that imports `telegram_mcp_notify.server`).
 2. Verify tool coverage in runtime:
-   - Full input mode should expose `ask_user` and `check_pending_prompt` (plus listener lifecycle tools).
+   - Full input mode should expose `ask_user_confirmation` / `ask_user_choice` and `check_pending_prompt`.
    - If only `send_telegram_notification` is exposed, treat it as notify-only mode and do not claim reply listening.
 3. Restart Codex/Cursor after MCP or skill file changes.
 4. Plan Mode clarification routing policy:
    - In Plan Mode, direct clarification questions should be sent through Telegram input tools first.
-   - Recommended type-aware routing: binary -> `ask_user_confirmation`; 3+ options -> `ask_user_choice`; free-form only when options are not feasible.
+   - Recommended type-aware routing: binary -> `ask_user_confirmation`; 3+ options -> `ask_user_choice`; free-form falls back to `request_user_input`.
    - Ask Telegram questions with `timeout_minutes=5`.
    - Wait using `wait_pending_prompt(session_id, prompt_id, timeout_seconds=300, consume=true)`.
    - Do one immediate final check via `check_pending_prompt(session_id, prompt_id, consume=true)` before fallback.
@@ -307,20 +307,15 @@ Restart Cursor or Codex after installing the skill.
 
 | Tool | Description |
 |------|-------------|
-| `ask_user` | Send a text question and register for reply |
 | `ask_user_confirmation` | Yes/No inline keyboard |
 | `ask_user_choice` | Multiple-choice via poll or inline keyboard |
-| `cancel_prompt` | Cancel a pending prompt |
-| `get_recent_messages` | Retrieve recent inbound messages |
 
 ### Low-Level Input Tools
 
 | Tool | Description |
 |------|-------------|
-| `register_pending_prompt` | Register prompt with text/poll/inline delivery |
 | `check_pending_prompt` | Check status and consume resolved response |
 | `wait_pending_prompt` | Block until prompt is resolved/expired/cancelled or timeout |
-| `list_pending_prompts` | List prompts by session with status filter |
 
 ### Lifecycle Tools
 
@@ -330,7 +325,6 @@ Restart Cursor or Codex after installing the skill.
 | `start_telegram_listener` | Start the reply listener daemon |
 | `stop_telegram_listener` | Stop listener and reset runtime state |
 | `restart_telegram_listener` | Deterministic stop/start with health confirmation |
-| `repair_telegram_listener` | Repair stale PID/lock and optionally restart |
 
 ### Diagnostic Tools
 
@@ -343,9 +337,9 @@ Restart Cursor or Codex after installing the skill.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No notifications received | Bot token or chat ID wrong | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
-| Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `repair_telegram_listener` |
-| "stale_lock" health reason | Previous listener crashed | Call `repair_telegram_listener(restart=true)` |
-| "heartbeat_stale" | Listener froze or network issue | Call `repair_telegram_listener(restart=true)` |
+| Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `restart_telegram_listener` |
+| "stale_lock" health reason | Previous listener crashed | Call `restart_telegram_listener` |
+| "heartbeat_stale" | Listener froze or network issue | Call `restart_telegram_listener` |
 | "token_conflict" health reason | Another client is polling `getUpdates` with same token | Stop competing consumer or use a separate bot token |
 | "start_backoff_active" | Listener recently failed to start repeatedly | Wait for backoff or call `restart_telegram_listener` after fixing root cause |
 | Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |

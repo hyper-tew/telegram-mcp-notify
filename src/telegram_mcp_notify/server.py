@@ -25,20 +25,16 @@ from .config import (
 from .inbox import (
     INPUT_MODE_INLINE,
     INPUT_MODE_POLL,
-    INPUT_MODE_TEXT,
     STATUS_CANCELLED,
     STATUS_CONSUMED,
     STATUS_EXPIRED,
     STATUS_RESOLVED,
-    cancel_prompt as cancel_prompt_in_db,
     consume_prompt,
     create_expiry_timestamp,
     expire_prompt_if_needed,
     get_listener_state,
-    get_recent_inbound_messages,
     increment_listener_restart_count,
     initialize_inbox_db,
-    list_pending_prompts as list_pending_prompts_from_store,
     reset_listener_runtime_state,
     resolve_inbox_db_path,
     resolve_listener_log_path,
@@ -79,7 +75,7 @@ DEFAULT_SINGLETON_POLICY = "strict_single_owner"
 DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
 DEFAULT_INLINE_COLUMNS = 2
-VALID_INPUT_MODES = {INPUT_MODE_TEXT, INPUT_MODE_POLL, INPUT_MODE_INLINE}
+VALID_INPUT_MODES = {INPUT_MODE_POLL, INPUT_MODE_INLINE}
 LISTENER_STARTUP_TIMEOUT_SECONDS = 10.0
 LISTENER_STARTUP_POLL_SECONDS = 0.25
 LISTENER_START_MAX_ATTEMPTS = 2
@@ -110,16 +106,11 @@ TERMINAL_PROMPT_STATUSES = {
 
 _TOOL_GROUP_NOTIFICATION = ("send_telegram_notification",)
 _TOOL_GROUP_HIGH_LEVEL_INPUT = (
-    "ask_user",
     "ask_user_confirmation",
     "ask_user_choice",
-    "cancel_prompt",
-    "get_recent_messages",
 )
 _TOOL_GROUP_LOW_LEVEL_INPUT = (
-    "register_pending_prompt",
     "check_pending_prompt",
-    "list_pending_prompts",
     "wait_pending_prompt",
 )
 _TOOL_GROUP_LIFECYCLE = (
@@ -127,7 +118,6 @@ _TOOL_GROUP_LIFECYCLE = (
     "start_telegram_listener",
     "stop_telegram_listener",
     "restart_telegram_listener",
-    "repair_telegram_listener",
 )
 _TOOL_GROUP_DIAGNOSTICS = ("telegram_notify_capabilities",)
 
@@ -504,20 +494,20 @@ def _derive_health_reason(
         )
     if running and startup_confirmed and status == "running":
         if heartbeat_age_seconds is not None and heartbeat_age_seconds > LISTENER_HEARTBEAT_STALE_SECONDS:
-            return "heartbeat_stale", "Run repair_telegram_listener to refresh stale heartbeat state."
+            return "heartbeat_stale", "Run restart_telegram_listener; confirm with telegram_listener_health."
         return "healthy", "No action required."
     if running and not startup_confirmed:
-        return "startup_unconfirmed", "Wait briefly; if it persists, run repair_telegram_listener."
+        return "startup_unconfirmed", "Wait briefly; if it persists, run restart_telegram_listener."
     if not running and pid is not None:
-        return "stale_pid", "Run repair_telegram_listener to clear stale PID/runtime state."
+        return "stale_pid", "Run restart_telegram_listener to clear stale PID/runtime state."
     if lock_status == "stale":
-        return "stale_lock", "Run repair_telegram_listener to clear stale lock state."
+        return "stale_lock", "Run restart_telegram_listener to clear stale lock state."
     if status == "degraded":
-        return "degraded", "Inspect log tail and run repair_telegram_listener."
+        return "degraded", "Inspect log tail and run restart_telegram_listener."
     if status == "error":
-        return "error", "Inspect last_error/log_tail and run repair_telegram_listener."
+        return "error", "Inspect last_error/log_tail and run restart_telegram_listener."
     if status == "starting":
-        return "starting", "Wait briefly; if startup does not confirm, run repair_telegram_listener."
+        return "starting", "Wait briefly; if startup does not confirm, run restart_telegram_listener."
     return "stopped", "Call start_telegram_listener to start the background listener."
 
 
@@ -1059,7 +1049,7 @@ def _ensure_listener_running(
         "start_backoff_active",
     }:
         latest["health_reason"] = "startup_confirmation_timeout"
-        latest["recommended_action"] = "Run repair_telegram_listener(include_log_tail=true) and inspect errors."
+        latest["recommended_action"] = "Run restart_telegram_listener and inspect telegram_listener_health diagnostics."
     return {
         "ok": False,
         "running": bool(latest.get("running")),
@@ -1075,7 +1065,7 @@ def _normalize_choices(choices: list[str] | None) -> list[str]:
 
 
 def _normalize_input_mode(input_mode: str | None) -> str:
-    return str(input_mode or INPUT_MODE_TEXT).strip().lower()
+    return str(input_mode or INPUT_MODE_INLINE).strip().lower()
 
 
 def _resolve_expiry_minutes(*, expires_at_utc: str | None, fallback_minutes: int) -> int:
@@ -1086,41 +1076,6 @@ def _resolve_expiry_minutes(*, expires_at_utc: str | None, fallback_minutes: int
     if delta_seconds <= 0:
         return 1
     return max(1, int(math.ceil(delta_seconds / 60.0)))
-
-
-def _build_pending_prompt_message(
-    *,
-    task_name: str,
-    session_id: str,
-    run_id: str | None,
-    prompt_id: str,
-    prompt_text: str,
-    prompt_kind: str,
-    choices: list[str] | None,
-    expires_at_utc: str | None,
-) -> str:
-    lines = [
-        f"INPUT REQUIRED | {task_name}",
-        str(prompt_text or "").strip() or "No details provided.",
-        f"prompt_kind={str(prompt_kind or 'question').strip().lower()}",
-        f"prompt_id={prompt_id}",
-        f"session_id={session_id}",
-    ]
-    if run_id and str(run_id).strip():
-        lines.append(f"run_id={str(run_id).strip()}")
-    if choices:
-        lines.append(f"choices={', '.join(choices)}")
-    if expires_at_utc and str(expires_at_utc).strip():
-        lines.append(f"expires_at_utc={str(expires_at_utc).strip()}")
-    lines.extend(
-        [
-            "Reply with:",
-            f"ANSWER {prompt_id} <text>",
-            f"APPROVE {prompt_id}",
-            f"DECLINE {prompt_id}",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _build_inline_prompt_message(
@@ -1199,11 +1154,7 @@ def send_telegram_notification(
         return _to_error_payload(str(exc))
 
 
-@SERVER.tool(
-    name="register_pending_prompt",
-    description="Register a pending prompt and optionally send text/poll/inline Telegram input prompts.",
-)
-def register_pending_prompt(
+def _register_pending_prompt(
     session_id: str,
     prompt_text: str,
     prompt_id: str | None = None,
@@ -1211,7 +1162,7 @@ def register_pending_prompt(
     task_name: str | None = None,
     prompt_kind: str = "question",
     choices: list[str] | None = None,
-    input_mode: str = INPUT_MODE_TEXT,
+    input_mode: str = INPUT_MODE_INLINE,
     allows_multiple_answers: bool = False,
     inline_columns: int = DEFAULT_INLINE_COLUMNS,
     expires_at_utc: str | None = None,
@@ -1276,19 +1227,7 @@ def register_pending_prompt(
                 session_id=normalized_session_id,
                 message=normalized_prompt_text,
             )
-            if normalized_input_mode == INPUT_MODE_TEXT:
-                msg = _build_pending_prompt_message(
-                    task_name=resolved_task,
-                    session_id=normalized_session_id,
-                    run_id=run_id,
-                    prompt_id=persisted_prompt_id,
-                    prompt_text=normalized_prompt_text,
-                    prompt_kind=prompt_kind,
-                    choices=normalized_choices,
-                    expires_at_utc=ttl_target,
-                )
-                delivery = send_telegram_message(msg, config=config, max_retries=1)
-            elif normalized_input_mode == INPUT_MODE_POLL:
+            if normalized_input_mode == INPUT_MODE_POLL:
                 delivery = send_telegram_poll(
                     question=normalized_prompt_text,
                     options=normalized_choices,
@@ -1351,7 +1290,7 @@ def register_pending_prompt(
             "prompt": record,
         }
     except Exception as exc:
-        _stderr(f"telegram_notify_server register_pending_prompt error: {exc}")
+        _stderr(f"telegram_notify_server _register_pending_prompt error: {exc}")
         return {"ok": False, "error": str(exc)}
 
 
@@ -1410,42 +1349,6 @@ def check_pending_prompt(
 
 
 @SERVER.tool(
-    name="list_pending_prompts",
-    description="List pending prompts for a session with optional status filter.",
-)
-def list_pending_prompts(
-    session_id: str,
-    status_filter: str | None = None,
-    limit: int = 20,
-    db_path: str | None = None,
-) -> dict[str, Any]:
-    try:
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_session_id:
-            return {"ok": False, "error": "session_id is required."}
-        initialize_inbox_db(db_path)
-        records = list_pending_prompts_from_store(
-            session_id=normalized_session_id,
-            status_filter=status_filter,
-            limit=int(limit),
-            db_path=db_path,
-        )
-        for record in records:
-            if str(record.get("status")) == "waiting":
-                refreshed = expire_prompt_if_needed(
-                    prompt_id=str(record.get("prompt_id") or ""),
-                    session_id=normalized_session_id,
-                    db_path=db_path,
-                )
-                if refreshed is not None:
-                    record.update(refreshed)
-        return {"ok": True, "session_id": normalized_session_id, "count": len(records), "pending_prompts": records}
-    except Exception as exc:
-        _stderr(f"telegram_notify_server list_pending_prompts error: {exc}")
-        return {"ok": False, "error": str(exc)}
-
-
-@SERVER.tool(
     name="telegram_listener_health",
     description="Return health for the Telegram reply listener daemon.",
 )
@@ -1467,7 +1370,7 @@ def telegram_listener_health(
             "error": str(exc),
             "state_status": "error",
             "health_reason": "health_exception",
-            "recommended_action": "Run repair_telegram_listener and inspect logs.",
+            "recommended_action": "Run restart_telegram_listener and inspect logs.",
         }
 
 
@@ -1557,99 +1460,9 @@ def restart_telegram_listener(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="repair_telegram_listener",
-    description="Repair Telegram listener stale PID/lock/runtime state and optionally restart.",
-)
-def repair_telegram_listener(
-    db_path: str | None = None,
-    restart: bool = True,
-    reason: str | None = None,
-) -> dict[str, Any]:
-    errors: list[str] = []
-    actions: list[str] = []
-    try:
-        resolved_db_path = resolve_inbox_db_path(initialize_inbox_db(db_path))
-        repair_reason = str(reason or "manual_repair").strip() or "manual_repair"
-        before = _listener_health_payload(resolved_db_path, include_log_tail=True, log_tail_lines=20)
-
-        heal_actions, heal_errors = _apply_balanced_self_heal(db_path=resolved_db_path, reason=repair_reason)
-        actions.extend(heal_actions)
-        errors.extend(heal_errors)
-
-        after: dict[str, Any]
-        if bool(restart):
-            start_result = _ensure_listener_running(resolved_db_path, self_heal=False)
-            actions.append("restart_attempted")
-            if not bool(start_result.get("ok")):
-                errors.append("restart_failed")
-            after = dict(start_result.get("diagnostics") or _listener_health_payload(resolved_db_path))
-        else:
-            after = _listener_health_payload(resolved_db_path, include_log_tail=True, log_tail_lines=20)
-
-        return {
-            "ok": len(errors) == 0 and (not bool(restart) or bool(after.get("startup_confirmed"))),
-            "actions_taken": actions,
-            "before": before,
-            "after": after,
-            "errors": errors,
-        }
-    except Exception as exc:
-        errors.append(str(exc))
-        _stderr(f"telegram_notify_server repair_telegram_listener error: {exc}")
-        return {
-            "ok": False,
-            "actions_taken": actions,
-            "before": None,
-            "after": None,
-            "errors": errors,
-        }
-
-
 # ---------------------------------------------------------------------------
 # New high-level input tools
 # ---------------------------------------------------------------------------
-
-
-@SERVER.tool(
-    name="ask_user",
-    description=(
-        "Send a text question to the user via Telegram and register it as a pending prompt. "
-        "Returns the prompt_id for later checking with check_pending_prompt. "
-        "Combines send_telegram_notification + register_pending_prompt in one call."
-    ),
-)
-def ask_user(
-    question: str,
-    session_id: str,
-    task_name: str | None = None,
-    run_id: str | None = None,
-    timeout_minutes: int = DEFAULT_PROMPT_EXPIRY_MINUTES,
-    db_path: str | None = None,
-) -> dict[str, Any]:
-    try:
-        normalized_question = str(question or "").strip()
-        normalized_session_id = str(session_id or "").strip()
-        if not normalized_question:
-            return {"ok": False, "error": "question is required."}
-        if not normalized_session_id:
-            return {"ok": False, "error": "session_id is required."}
-
-        return register_pending_prompt(
-            session_id=normalized_session_id,
-            prompt_text=normalized_question,
-            run_id=run_id,
-            task_name=task_name,
-            prompt_kind="question",
-            input_mode=INPUT_MODE_TEXT,
-            expires_in_minutes=max(1, int(timeout_minutes)),
-            send_notification=True,
-            ensure_listener=True,
-            db_path=db_path,
-        )
-    except Exception as exc:
-        _stderr(f"telegram_notify_server ask_user error: {exc}")
-        return {"ok": False, "error": str(exc)}
 
 
 @SERVER.tool(
@@ -1675,7 +1488,7 @@ def ask_user_confirmation(
         if not normalized_session_id:
             return {"ok": False, "error": "session_id is required."}
 
-        return register_pending_prompt(
+        return _register_pending_prompt(
             session_id=normalized_session_id,
             prompt_text=normalized_question,
             run_id=run_id,
@@ -1727,7 +1540,7 @@ def ask_user_choice(
         if mode == "auto":
             mode = INPUT_MODE_INLINE if len(normalized_choices) <= 4 else INPUT_MODE_POLL
 
-        return register_pending_prompt(
+        return _register_pending_prompt(
             session_id=normalized_session_id,
             prompt_text=normalized_question,
             run_id=run_id,
@@ -1742,66 +1555,6 @@ def ask_user_choice(
         )
     except Exception as exc:
         _stderr(f"telegram_notify_server ask_user_choice error: {exc}")
-        return {"ok": False, "error": str(exc)}
-
-
-@SERVER.tool(
-    name="cancel_prompt",
-    description="Cancel a pending prompt so it is no longer awaited.",
-)
-def tool_cancel_prompt(
-    session_id: str,
-    prompt_id: str,
-    db_path: str | None = None,
-) -> dict[str, Any]:
-    try:
-        normalized_session_id = str(session_id or "").strip()
-        normalized_prompt_id = str(prompt_id or "").strip()
-        if not normalized_session_id or not normalized_prompt_id:
-            return {"ok": False, "error": "session_id and prompt_id are required."}
-
-        initialize_inbox_db(db_path)
-        record = cancel_prompt_in_db(
-            prompt_id=normalized_prompt_id,
-            session_id=normalized_session_id,
-            db_path=db_path,
-        )
-        if record is None:
-            return {"ok": False, "error": "Prompt not found.", "prompt_id": normalized_prompt_id}
-
-        cancelled = str(record.get("status")) == STATUS_CANCELLED
-        return {
-            "ok": cancelled,
-            "prompt_id": record.get("prompt_id"),
-            "previous_status": "waiting" if cancelled else record.get("status"),
-            "current_status": record.get("status"),
-        }
-    except Exception as exc:
-        _stderr(f"telegram_notify_server cancel_prompt error: {exc}")
-        return {"ok": False, "error": str(exc)}
-
-
-@SERVER.tool(
-    name="get_recent_messages",
-    description="Retrieve recent inbound messages from the inbox database (useful for context or reviewing user replies).",
-)
-def tool_get_recent_messages(
-    limit: int = 10,
-    db_path: str | None = None,
-) -> dict[str, Any]:
-    try:
-        initialize_inbox_db(db_path)
-        messages = get_recent_inbound_messages(
-            limit=max(1, min(int(limit), 100)),
-            db_path=db_path,
-        )
-        return {
-            "ok": True,
-            "count": len(messages),
-            "messages": messages,
-        }
-    except Exception as exc:
-        _stderr(f"telegram_notify_server get_recent_messages error: {exc}")
         return {"ok": False, "error": str(exc)}
 
 
