@@ -1,7 +1,0 @@
-[mcp_servers.telegram_notify]
-command = "uvx"
-args = ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"]
-
-[mcp_servers.telegram_notify.env]
-TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
-TELEGRAM_CHAT_ID = "123456789"
