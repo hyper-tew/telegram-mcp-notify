@@ -47,7 +47,7 @@ Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for glob
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/hyper-tew/telegram-mcp-notify",
+        "git+https://github.com/hyper-tew/telegram-mcp-notify@feature/notify-only",
         "telegram-mcp-notify"
       ],
       "env": {
@@ -77,7 +77,7 @@ Add to `~/.codex/config.toml` (global) or `.codex/config.toml` (project-scoped, 
 ```toml
 [mcp_servers.telegram_notify]
 command = "uvx"
-args = ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"]
+args = ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify@feature/notify-only", "telegram-mcp-notify"]
 
 [mcp_servers.telegram_notify.env]
 TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
@@ -92,12 +92,12 @@ Replace the token and chat ID values with your own credentials.
 codex mcp add telegram_notify \
   --env TELEGRAM_BOT_TOKEN=123456:ABC-DEF... \
   --env TELEGRAM_CHAT_ID=123456789 \
-  -- uvx --from "git+https://github.com/hyper-tew/telegram-mcp-notify" telegram-mcp-notify
+  -- uvx --from "git+https://github.com/hyper-tew/telegram-mcp-notify@feature/notify-only" telegram-mcp-notify
 ```
 
 ## Tracked Config Templates
 
-This repo includes ready-to-copy templates that pin the MCP source to this GitHub repository:
+This repo includes ready-to-copy templates that pin the MCP source to this branch:
 
 - [docs/config-examples/cursor.mcp.json](docs/config-examples/cursor.mcp.json)
 - [docs/config-examples/codex.config.toml](docs/config-examples/codex.config.toml)
@@ -110,7 +110,7 @@ If you prefer to install the package first (e.g. for pinning a version or offlin
 
 ```bash
 # From GitHub
-pip install git+https://github.com/hyper-tew/telegram-mcp-notify.git
+pip install git+https://github.com/hyper-tew/telegram-mcp-notify.git@feature/notify-only
 
 # From a local clone
 pip install ./telegram-mcp-notify
@@ -180,7 +180,7 @@ Example with optional vars in Cursor:
   "mcpServers": {
     "telegram_notify": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"],
+      "args": ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify@feature/notify-only", "telegram-mcp-notify"],
       "env": {
         "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
         "TELEGRAM_CHAT_ID": "123456789",
@@ -243,16 +243,16 @@ Copy-Item ".agents\skills\telegram-notify\openai.yaml" "$HOME\.agents\skills\tel
 ```bash
 # Cursor
 mkdir -p ~/.cursor/skills/telegram-notify
-curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/SKILL.md \
   -o ~/.cursor/skills/telegram-notify/SKILL.md
-curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml \
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/openai.yaml \
   -o ~/.cursor/skills/telegram-notify/openai.yaml
 
 # Codex
 mkdir -p ~/.agents/skills/telegram-notify
-curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/SKILL.md \
   -o ~/.agents/skills/telegram-notify/SKILL.md
-curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml \
+curl -fsSL https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/openai.yaml \
   -o ~/.agents/skills/telegram-notify/openai.yaml
 ```
 
@@ -261,16 +261,16 @@ On Windows (PowerShell):
 ```powershell
 # Cursor
 New-Item -ItemType Directory -Path "$HOME\.cursor\skills\telegram-notify" -Force
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/SKILL.md" `
   -OutFile "$HOME\.cursor\skills\telegram-notify\SKILL.md"
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml" `
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/openai.yaml" `
   -OutFile "$HOME\.cursor\skills\telegram-notify\openai.yaml"
 
 # Codex
 New-Item -ItemType Directory -Path "$HOME\.agents\skills\telegram-notify" -Force
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/SKILL.md" `
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/SKILL.md" `
   -OutFile "$HOME\.agents\skills\telegram-notify\SKILL.md"
-Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/main/.agents/skills/telegram-notify/openai.yaml" `
+Invoke-WebRequest -Uri "https://raw.githubusercontent.com/hyper-tew/telegram-mcp-notify/feature/notify-only/.agents/skills/telegram-notify/openai.yaml" `
   -OutFile "$HOME\.agents\skills\telegram-notify\openai.yaml"
 ```
 
@@ -310,7 +310,7 @@ Restart Cursor or Codex after installing the skill.
 |---------|-------|-----|
 | No notifications received | Bot token or chat ID wrong | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
 | Capability output shows more than 2 tools | Wrong branch/runtime | Use `feature/notify-only` and restart client |
-| `Client error for command spawn telegram-mcp-notify ENOENT` | Executable not installed or not on app PATH | Use `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify telegram-mcp-notify` in MCP config, or switch to `python -m telegram_mcp_notify.server` |
+| `Client error for command spawn telegram-mcp-notify ENOENT` | Executable not installed or not on app PATH | Use `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify@feature/notify-only telegram-mcp-notify` in MCP config, or switch to `python -m telegram_mcp_notify.server` |
 | `Client error for command spawn uvx ENOENT` | `uv`/`uvx` is not installed or not on app PATH | Install `uv` and restart the app, or use the pip-based `python -m telegram_mcp_notify.server` configuration |
 
 ## Data Paths
