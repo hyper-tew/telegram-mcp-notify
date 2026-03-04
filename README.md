@@ -2,6 +2,8 @@
 
 Telegram notification MCP server with bidirectional reply support for AI coding agents (Cursor, Codex, Claude Code).
 
+> Branch note: `feature/add-user-input` keeps the full 10-tool input-capable MCP surface.
+
 ## IMPORTANT DISCLAIMER (WIP / SELF-USE)
 
 > [!WARNING]
@@ -103,6 +105,21 @@ This repo includes ready-to-copy templates that pin the MCP source to this GitHu
 
 - [docs/config-examples/cursor.mcp.json](docs/config-examples/cursor.mcp.json)
 - [docs/config-examples/codex.config.toml](docs/config-examples/codex.config.toml)
+
+## Online/Remote MCP Setup (Optional)
+
+Local stdio mode is still the default and recommended setup for this repository.
+Use remote MCP transport only when you intentionally deploy and manage a remote endpoint.
+
+- Official Codex MCP docs: https://developers.openai.com/codex/mcp
+- Codex client + remote MCP usage examples: https://docs.mcp.run/mcp-clients/codex
+- Python MCP SDK transport support (`stdio`, `streamable-http`): https://github.com/modelcontextprotocol/python-sdk
+
+When switching to remote MCP:
+
+1. Keep the same capability expectations (`telegram_notify_capabilities` should still report the full 10-tool surface).
+2. Protect bot credentials and network access controls at the deployment boundary.
+3. Keep local stdio config as a fallback path for debugging and recovery.
 
 ---
 

@@ -96,6 +96,7 @@ Use `send_telegram_notification` at meaningful checkpoints:
 - `event=attention_needed`: when blocked on user action
 - `event=error`: when a critical error occurs
 - `event=final`: when task is completed
+- Use `event=error` and `event=attention_needed` only when manual user attention/action is actually required.
 
 Do not notify routine progress chatter.
 
