@@ -13,8 +13,10 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 ## Features
 
 - **Outbound notifications**: Send structured Telegram messages for questions, plans, errors, final results, and attention-needed events.
-- **Inbound replies**: Receive user responses via text commands, inline keyboards, or polls.
+- **Inbound replies**: Receive responses via natural text, inline keyboards, or polls.
 - **Core input tools**: `ask_user_confirmation` and `ask_user_choice` for interactive decisions.
+- **Natural mapping**: Supports flexible references like `yes 123`, `123 approve`, and `answer 123 <text>`.
+- **Custom MCQ answer**: `ask_user_choice` can include an `Other` button that captures typed follow-up text.
 - **Singleton lifecycle**: File-based locking ensures only one server/listener runs at a time.
 - **Self-healing listener**: Automatic stale PID/lock cleanup and restart.
 - **Cross-platform**: Works on Windows (msvcrt) and POSIX (fcntl).
@@ -307,8 +309,8 @@ Restart Cursor or Codex after installing the skill.
 
 | Tool | Description |
 |------|-------------|
-| `ask_user_confirmation` | Yes/No inline keyboard |
-| `ask_user_choice` | Multiple-choice via poll or inline keyboard |
+| `ask_user_confirmation` | Yes/No inline keyboard with natural text fallback (`yes/no`, optional alias ref) |
+| `ask_user_choice` | Multiple-choice via inline keyboard or poll (`allow_custom_text=true` adds `Other` and forces inline) |
 
 ### Low-Level Input Tools
 

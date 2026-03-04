@@ -11,6 +11,10 @@ from telegram_mcp_notify.inbox import (
     STATUS_RESOLVED,
     STATUS_WAITING,
     consume_prompt,
+    count_compatible_waiting_prompts_for_light_guess,
+    find_compatible_waiting_prompt_for_light_guess,
+    get_waiting_custom_text_prompt_for_user,
+    get_waiting_prompt_by_alias,
     expire_prompt_if_needed,
     get_waiting_prompt_by_callback_namespace,
     get_waiting_prompt_by_poll_id,
@@ -21,10 +25,12 @@ from telegram_mcp_notify.inbox import (
     mark_prompt_resolved,
     parse_reply_command,
     reset_listener_runtime_state,
+    set_prompt_waiting_custom_text,
     set_listener_error,
     update_listener_state,
     update_prompt_delivery,
     upsert_pending_prompt,
+    clear_prompt_waiting_custom_text,
 )
 
 
@@ -32,20 +38,57 @@ def test_parse_reply_command_supports_answer_and_approval_tokens() -> None:
     answer = parse_reply_command("ANSWER prompt_123 model confidence low")
     approve = parse_reply_command("APPROVE prompt_123")
     decline = parse_reply_command("decline prompt_123")
+    alias_by_strict_answer = parse_reply_command("answer 123 use model D")
+    alias_by_strict_approve = parse_reply_command("approve 123")
+    alias_approve = parse_reply_command("yes to 123")
+    alias_answer = parse_reply_command("123 answer use model C")
+    natural_yes = parse_reply_command("approved")
 
     assert answer is not None
     assert answer.command == "answer"
-    assert answer.prompt_id == "prompt_123"
+    assert answer.prompt_ref == "prompt_123"
+    assert answer.prompt_ref_type == "id"
     assert answer.response_text == "model confidence low"
     assert answer.response_type == "answer"
 
     assert approve is not None
     assert approve.command == "approve"
+    assert approve.prompt_ref == "prompt_123"
+    assert approve.prompt_ref_type == "id"
     assert approve.response_type == "approve"
 
     assert decline is not None
     assert decline.command == "decline"
+    assert decline.prompt_ref == "prompt_123"
+    assert decline.prompt_ref_type == "id"
     assert decline.response_type == "decline"
+
+    assert alias_approve is not None
+    assert alias_approve.command == "approve"
+    assert alias_approve.prompt_ref == "123"
+    assert alias_approve.prompt_ref_type == "alias"
+
+    assert alias_by_strict_approve is not None
+    assert alias_by_strict_approve.command == "approve"
+    assert alias_by_strict_approve.prompt_ref == "123"
+    assert alias_by_strict_approve.prompt_ref_type == "alias"
+
+    assert alias_by_strict_answer is not None
+    assert alias_by_strict_answer.command == "answer"
+    assert alias_by_strict_answer.prompt_ref == "123"
+    assert alias_by_strict_answer.prompt_ref_type == "alias"
+    assert alias_by_strict_answer.response_text == "use model D"
+
+    assert alias_answer is not None
+    assert alias_answer.command == "answer"
+    assert alias_answer.prompt_ref == "123"
+    assert alias_answer.prompt_ref_type == "alias"
+    assert alias_answer.response_text == "use model C"
+
+    assert natural_yes is not None
+    assert natural_yes.command == "approve"
+    assert natural_yes.prompt_ref is None
+    assert natural_yes.prompt_ref_type is None
 
 
 def test_pending_prompt_resolve_and_consume_flow(tmp_path) -> None:
@@ -129,6 +172,59 @@ def test_waiting_prompt_lookup_supports_poll_and_callback_namespace(tmp_path) ->
     by_poll = get_waiting_prompt_by_poll_id(poll_id="poll_lookup", db_path=db_path)
     assert by_poll is not None
     assert by_poll["prompt_id"] == "prompt-lookup"
+
+
+def test_prompt_alias_custom_state_and_light_guess_helpers(tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    initialize_inbox_db(db_path)
+    confirmation = upsert_pending_prompt(
+        session_id="session-alias",
+        prompt_id="prompt-confirm",
+        prompt_text="Approve deployment?",
+        prompt_kind="confirmation",
+        input_mode=INPUT_MODE_INLINE,
+        choices=["Yes", "No"],
+        db_path=db_path,
+    )
+    choice = upsert_pending_prompt(
+        session_id="session-alias",
+        prompt_id="prompt-choice",
+        prompt_text="Pick strategy",
+        prompt_kind="choice",
+        input_mode=INPUT_MODE_INLINE,
+        choices=["A", "B"],
+        custom_text_enabled=True,
+        db_path=db_path,
+    )
+
+    assert str(confirmation.get("prompt_alias") or "").isdigit()
+    assert len(str(confirmation.get("prompt_alias") or "")) == 3
+    assert str(choice.get("prompt_alias") or "").isdigit()
+    assert len(str(choice.get("prompt_alias") or "")) == 3
+
+    by_alias = get_waiting_prompt_by_alias(alias=str(choice["prompt_alias"]), db_path=db_path)
+    assert by_alias is not None
+    assert by_alias["prompt_id"] == "prompt-choice"
+
+    set_prompt_waiting_custom_text(prompt_id="prompt-choice", user_id="42", db_path=db_path)
+    waiting_custom = get_waiting_custom_text_prompt_for_user(user_id="42", db_path=db_path)
+    assert waiting_custom is not None
+    assert waiting_custom["prompt_id"] == "prompt-choice"
+    assert waiting_custom["awaiting_custom_text"] == 1
+
+    cleared = clear_prompt_waiting_custom_text(prompt_id="prompt-choice", db_path=db_path)
+    assert cleared is not None
+    assert cleared["awaiting_custom_text"] == 0
+
+    guessed_confirmation = find_compatible_waiting_prompt_for_light_guess(text="yes", db_path=db_path)
+    assert guessed_confirmation is not None
+    assert guessed_confirmation["prompt_id"] == "prompt-confirm"
+    assert count_compatible_waiting_prompts_for_light_guess(text="yes", db_path=db_path) == 1
+
+    guessed_choice = find_compatible_waiting_prompt_for_light_guess(text="my own answer", db_path=db_path)
+    assert guessed_choice is not None
+    assert guessed_choice["prompt_id"] == "prompt-choice"
+    assert count_compatible_waiting_prompts_for_light_guess(text="my own answer", db_path=db_path) == 1
 
 
 def test_selection_response_payload_is_projected_to_selected_fields(tmp_path) -> None:

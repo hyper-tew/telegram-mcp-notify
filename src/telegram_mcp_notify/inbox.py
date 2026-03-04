@@ -28,9 +28,17 @@ RESPONSE_DECLINE = "decline"
 RESPONSE_SELECTION = "selection"
 
 _PROMPT_ID_RE = r"[a-zA-Z0-9][a-zA-Z0-9_-]{2,127}"
+_PROMPT_ALIAS_RE = r"\d{3}"
 _ANSWER_RE = re.compile(rf"^\s*answer\s+({_PROMPT_ID_RE})\s+(.+?)\s*$", re.IGNORECASE)
 _APPROVE_RE = re.compile(rf"^\s*approve\s+({_PROMPT_ID_RE})\s*$", re.IGNORECASE)
 _DECLINE_RE = re.compile(rf"^\s*decline\s+({_PROMPT_ID_RE})\s*$", re.IGNORECASE)
+_ALIAS_ANSWER_RE = re.compile(rf"^\s*answer\s+({_PROMPT_ALIAS_RE})\s+(.+?)\s*$", re.IGNORECASE)
+_ALIAS_APPROVE_RE = re.compile(rf"^\s*approve\s+({_PROMPT_ALIAS_RE})\s*$", re.IGNORECASE)
+_ALIAS_DECLINE_RE = re.compile(rf"^\s*decline\s+({_PROMPT_ALIAS_RE})\s*$", re.IGNORECASE)
+_ALIAS_PREFIX_RE = re.compile(rf"^\s*({_PROMPT_ALIAS_RE})\s+([a-zA-Z]+)(?:\s+(.*))?\s*$", re.IGNORECASE)
+_COMMAND_PREFIX_RE = re.compile(rf"^\s*([a-zA-Z]+)\s+(?:to\s+)?({_PROMPT_ALIAS_RE})(?:\s+(.*))?\s*$", re.IGNORECASE)
+_YES_TOKENS = {"yes", "y", "approve", "approved"}
+_NO_TOKENS = {"no", "n", "decline", "declined", "reject", "rejected"}
 _SUPPORTED_STATUS = {
     STATUS_WAITING,
     STATUS_RESOLVED,
@@ -62,9 +70,15 @@ class ParsedReplyCommand:
     """Parsed text reply command from a user message."""
 
     command: str
-    prompt_id: str
+    prompt_ref: str | None
+    prompt_ref_type: str | None
     response_type: str
     response_text: str
+
+    @property
+    def prompt_id(self) -> str | None:
+        """Backward-compatible alias for legacy callers."""
+        return self.prompt_ref
 
 
 def _utc_now() -> datetime:
@@ -146,6 +160,11 @@ def initialize_inbox_db(db_path: str | Path | None = None) -> Path:
                 telegram_poll_id TEXT,
                 telegram_message_id INTEGER,
                 callback_namespace TEXT,
+                prompt_alias TEXT,
+                custom_text_enabled INTEGER NOT NULL DEFAULT 0,
+                awaiting_custom_text INTEGER NOT NULL DEFAULT 0,
+                awaiting_custom_text_user_id TEXT,
+                awaiting_custom_text_since_utc TEXT,
                 status TEXT NOT NULL DEFAULT 'waiting',
                 created_at_utc TEXT NOT NULL,
                 expires_at_utc TEXT,
@@ -203,6 +222,11 @@ def initialize_inbox_db(db_path: str | Path | None = None) -> Path:
                 "telegram_poll_id": "telegram_poll_id TEXT",
                 "telegram_message_id": "telegram_message_id INTEGER",
                 "callback_namespace": "callback_namespace TEXT",
+                "prompt_alias": "prompt_alias TEXT",
+                "custom_text_enabled": "custom_text_enabled INTEGER NOT NULL DEFAULT 0",
+                "awaiting_custom_text": "awaiting_custom_text INTEGER NOT NULL DEFAULT 0",
+                "awaiting_custom_text_user_id": "awaiting_custom_text_user_id TEXT",
+                "awaiting_custom_text_since_utc": "awaiting_custom_text_since_utc TEXT",
                 "response_payload_json": "response_payload_json TEXT",
             },
         )
@@ -300,6 +324,8 @@ def _row_to_dict(row: sqlite3.Row | Mapping[str, Any] | None) -> dict[str, Any] 
     payload["selected_options"] = _normalize_selected_options(
         response_payload.get("selected_options") if isinstance(response_payload, dict) else None
     )
+    payload["custom_text_enabled"] = int(payload.get("custom_text_enabled") or 0)
+    payload["awaiting_custom_text"] = int(payload.get("awaiting_custom_text") or 0)
     payload.pop("choices_json", None)
     payload.pop("response_payload_json", None)
     return payload
@@ -334,6 +360,15 @@ def _normalize_prompt_id(prompt_id: str | None) -> str:
     return f"tp_{uuid.uuid4().hex[:16]}"
 
 
+def _normalize_prompt_alias(prompt_alias: str | None) -> str | None:
+    alias = str(prompt_alias or "").strip()
+    if not alias:
+        return None
+    if re.fullmatch(_PROMPT_ALIAS_RE, alias) is None:
+        raise ValueError("prompt_alias must be a 3-digit string.")
+    return alias
+
+
 def create_expiry_timestamp(minutes: int | None) -> str | None:
     """Create an ISO-format expiry timestamp N minutes from now."""
     if minutes is None:
@@ -345,6 +380,41 @@ def create_expiry_timestamp(minutes: int | None) -> str | None:
     return expires.replace(microsecond=0).isoformat()
 
 
+def _is_prompt_alias_available(
+    connection: sqlite3.Connection,
+    *,
+    prompt_alias: str,
+    prompt_id: str | None = None,
+) -> bool:
+    row = connection.execute(
+        """
+        SELECT prompt_id
+        FROM pending_prompts
+        WHERE prompt_alias = ? AND status = ?
+        LIMIT 1
+        """,
+        (str(prompt_alias).strip(), STATUS_WAITING),
+    ).fetchone()
+    if row is None:
+        return True
+    existing_prompt_id = str(row["prompt_id"] if isinstance(row, sqlite3.Row) else row[0]).strip()
+    if prompt_id and existing_prompt_id == str(prompt_id).strip():
+        return True
+    return False
+
+
+def _generate_unique_prompt_alias(
+    connection: sqlite3.Connection,
+    *,
+    prompt_id: str | None = None,
+) -> str:
+    for _ in range(2000):
+        alias = f"{(uuid.uuid4().int % 1000):03d}"
+        if _is_prompt_alias_available(connection, prompt_alias=alias, prompt_id=prompt_id):
+            return alias
+    raise RuntimeError("Failed to allocate a unique 3-digit prompt alias.")
+
+
 def upsert_pending_prompt(
     *,
     session_id: str,
@@ -354,6 +424,8 @@ def upsert_pending_prompt(
     prompt_kind: str = "question",
     choices: list[str] | tuple[str, ...] | None = None,
     input_mode: str = INPUT_MODE_TEXT,
+    prompt_alias: str | None = None,
+    custom_text_enabled: bool = False,
     telegram_poll_id: str | None = None,
     telegram_message_id: int | None = None,
     callback_namespace: str | None = None,
@@ -367,7 +439,13 @@ def upsert_pending_prompt(
     normalized_kind = str(prompt_kind or "question").strip().lower() or "question"
     normalized_choices = _coerce_choices(choices)
     normalized_input_mode = _normalize_input_mode(input_mode)
+    normalized_alias = _normalize_prompt_alias(prompt_alias)
+    custom_text_flag = 1 if bool(custom_text_enabled) else 0
     with _connect(db_path) as connection:
+        if not normalized_alias:
+            normalized_alias = _generate_unique_prompt_alias(connection, prompt_id=normalized_prompt_id)
+        elif not _is_prompt_alias_available(connection, prompt_alias=normalized_alias, prompt_id=normalized_prompt_id):
+            raise ValueError(f"prompt_alias '{normalized_alias}' is already in use by a waiting prompt.")
         connection.execute(
             """
             INSERT INTO pending_prompts(
@@ -381,6 +459,11 @@ def upsert_pending_prompt(
                 telegram_poll_id,
                 telegram_message_id,
                 callback_namespace,
+                prompt_alias,
+                custom_text_enabled,
+                awaiting_custom_text,
+                awaiting_custom_text_user_id,
+                awaiting_custom_text_since_utc,
                 status,
                 created_at_utc,
                 expires_at_utc,
@@ -391,7 +474,7 @@ def upsert_pending_prompt(
                 response_payload_json,
                 source_message_id
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL)
             ON CONFLICT(prompt_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 run_id = excluded.run_id,
@@ -402,6 +485,11 @@ def upsert_pending_prompt(
                 telegram_poll_id = excluded.telegram_poll_id,
                 telegram_message_id = excluded.telegram_message_id,
                 callback_namespace = excluded.callback_namespace,
+                prompt_alias = excluded.prompt_alias,
+                custom_text_enabled = excluded.custom_text_enabled,
+                awaiting_custom_text = 0,
+                awaiting_custom_text_user_id = NULL,
+                awaiting_custom_text_since_utc = NULL,
                 status = excluded.status,
                 created_at_utc = excluded.created_at_utc,
                 expires_at_utc = excluded.expires_at_utc,
@@ -423,6 +511,8 @@ def upsert_pending_prompt(
                 str(telegram_poll_id).strip() if telegram_poll_id else None,
                 int(telegram_message_id) if telegram_message_id is not None else None,
                 str(callback_namespace).strip() if callback_namespace else None,
+                normalized_alias,
+                custom_text_flag,
                 STATUS_WAITING,
                 created_at,
                 str(expires_at_utc).strip() if expires_at_utc else None,
@@ -529,6 +619,187 @@ def get_waiting_prompt_by_callback_namespace(
     return _row_to_dict(row)
 
 
+def get_waiting_prompt_by_alias(
+    *,
+    alias: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Find a waiting prompt by a 3-digit alias."""
+    normalized = _normalize_prompt_alias(alias)
+    if not normalized:
+        return None
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM pending_prompts
+            WHERE prompt_alias = ? AND status = ?
+            ORDER BY created_at_utc DESC
+            LIMIT 1
+            """,
+            (normalized, STATUS_WAITING),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def get_waiting_custom_text_prompt_for_user(
+    *,
+    user_id: str | int | None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Return a waiting prompt currently expecting custom text from this user."""
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        return None
+    with _connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT * FROM pending_prompts
+            WHERE status = ?
+              AND awaiting_custom_text = 1
+              AND awaiting_custom_text_user_id = ?
+            ORDER BY awaiting_custom_text_since_utc DESC, created_at_utc DESC
+            LIMIT 1
+            """,
+            (STATUS_WAITING, normalized_user_id),
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def set_prompt_waiting_custom_text(
+    *,
+    prompt_id: str,
+    user_id: str | int | None,
+    when_utc: str | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Mark a prompt as waiting for custom text input from a specific user."""
+    normalized_prompt_id = str(prompt_id or "").strip()
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_prompt_id or not normalized_user_id:
+        return None
+    timestamp = str(when_utc or _utc_iso_now())
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE pending_prompts
+            SET awaiting_custom_text = 1,
+                awaiting_custom_text_user_id = ?,
+                awaiting_custom_text_since_utc = ?
+            WHERE prompt_id = ? AND status = ?
+            """,
+            (normalized_user_id, timestamp, normalized_prompt_id, STATUS_WAITING),
+        )
+        connection.commit()
+    return get_pending_prompt(prompt_id=normalized_prompt_id, db_path=db_path)
+
+
+def clear_prompt_waiting_custom_text(
+    *,
+    prompt_id: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Clear custom-text waiting state for a prompt."""
+    normalized_prompt_id = str(prompt_id or "").strip()
+    if not normalized_prompt_id:
+        return None
+    with _connect(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE pending_prompts
+            SET awaiting_custom_text = 0,
+                awaiting_custom_text_user_id = NULL,
+                awaiting_custom_text_since_utc = NULL
+            WHERE prompt_id = ?
+            """,
+            (normalized_prompt_id,),
+        )
+        connection.commit()
+    return get_pending_prompt(prompt_id=normalized_prompt_id, db_path=db_path)
+
+
+def find_compatible_waiting_prompt_for_light_guess(
+    *,
+    text: str,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """
+    Find a single strongly compatible waiting prompt from natural text.
+
+    - yes/no-ish text -> confirmation prompts only
+    - otherwise -> custom-text-enabled choice prompts only
+    - if zero or multiple candidates -> return None
+    """
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return None
+
+    decision_tokens = set(re.findall(r"[a-zA-Z]+", normalized))
+    is_yes_no = bool(decision_tokens & (_YES_TOKENS | _NO_TOKENS))
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM pending_prompts
+            WHERE status = ?
+            ORDER BY created_at_utc DESC
+            LIMIT 50
+            """,
+            (STATUS_WAITING,),
+        ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        payload = _row_to_dict(row)
+        if payload is None:
+            continue
+        prompt_kind = str(payload.get("prompt_kind") or "").strip().lower()
+        custom_enabled = int(payload.get("custom_text_enabled") or 0) == 1
+        if is_yes_no:
+            if prompt_kind == "confirmation":
+                candidates.append(payload)
+        else:
+            if prompt_kind == "choice" and custom_enabled:
+                candidates.append(payload)
+
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def count_compatible_waiting_prompts_for_light_guess(
+    *,
+    text: str,
+    db_path: str | Path | None = None,
+) -> int:
+    """Count compatible waiting prompts for light-guess routing."""
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return 0
+    decision_tokens = set(re.findall(r"[a-zA-Z]+", normalized))
+    is_yes_no = bool(decision_tokens & (_YES_TOKENS | _NO_TOKENS))
+    with _connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT prompt_kind, custom_text_enabled
+            FROM pending_prompts
+            WHERE status = ?
+            ORDER BY created_at_utc DESC
+            LIMIT 50
+            """,
+            (STATUS_WAITING,),
+        ).fetchall()
+    count = 0
+    for row in rows:
+        prompt_kind = str(row["prompt_kind"] if isinstance(row, sqlite3.Row) else row[0]).strip().lower()
+        custom_enabled_raw = row["custom_text_enabled"] if isinstance(row, sqlite3.Row) else row[1]
+        custom_enabled = int(custom_enabled_raw or 0) == 1
+        if is_yes_no:
+            if prompt_kind == "confirmation":
+                count += 1
+        else:
+            if prompt_kind == "choice" and custom_enabled:
+                count += 1
+    return count
+
+
 def mark_prompt_resolved(
     *,
     prompt_id: str,
@@ -556,7 +827,10 @@ def mark_prompt_resolved(
                 response_type = ?,
                 response_text = ?,
                 response_payload_json = ?,
-                source_message_id = ?
+                source_message_id = ?,
+                awaiting_custom_text = 0,
+                awaiting_custom_text_user_id = NULL,
+                awaiting_custom_text_since_utc = NULL
             WHERE prompt_id = ? AND status = ?
             """,
             (
@@ -874,39 +1148,133 @@ def increment_listener_restart_count(
 
 
 def parse_reply_command(text: str | None) -> ParsedReplyCommand | None:
-    """Parse a text reply command (ANSWER, APPROVE, DECLINE)."""
+    """Parse strict and natural text commands with prompt-id or 3-digit alias support."""
+
+    def _command_from_token(token_raw: str | None) -> tuple[str, str, str] | None:
+        token = re.sub(r"[^a-z]", "", str(token_raw or "").lower())
+        if not token:
+            return None
+        if token in _YES_TOKENS:
+            return "approve", RESPONSE_APPROVE, "approve"
+        if token in _NO_TOKENS:
+            return "decline", RESPONSE_DECLINE, "decline"
+        if token == "answer":
+            return "answer", RESPONSE_ANSWER, ""
+        if token == "approve":
+            return "approve", RESPONSE_APPROVE, "approve"
+        if token == "decline":
+            return "decline", RESPONSE_DECLINE, "decline"
+        return None
+
     raw = str(text or "").strip()
     if not raw:
         return None
+
     answer_match = _ANSWER_RE.match(raw)
     if answer_match:
-        prompt_id = answer_match.group(1).strip()
-        response_text = answer_match.group(2).strip()
+        prompt_ref = answer_match.group(1).strip()
+        prompt_ref_type = "alias" if re.fullmatch(_PROMPT_ALIAS_RE, prompt_ref) else "id"
         return ParsedReplyCommand(
             command="answer",
-            prompt_id=prompt_id,
+            prompt_ref=prompt_ref,
+            prompt_ref_type=prompt_ref_type,
             response_type=RESPONSE_ANSWER,
-            response_text=response_text,
+            response_text=answer_match.group(2).strip(),
         )
     approve_match = _APPROVE_RE.match(raw)
     if approve_match:
-        prompt_id = approve_match.group(1).strip()
+        prompt_ref = approve_match.group(1).strip()
+        prompt_ref_type = "alias" if re.fullmatch(_PROMPT_ALIAS_RE, prompt_ref) else "id"
         return ParsedReplyCommand(
             command="approve",
-            prompt_id=prompt_id,
+            prompt_ref=prompt_ref,
+            prompt_ref_type=prompt_ref_type,
             response_type=RESPONSE_APPROVE,
             response_text="approve",
         )
     decline_match = _DECLINE_RE.match(raw)
     if decline_match:
-        prompt_id = decline_match.group(1).strip()
+        prompt_ref = decline_match.group(1).strip()
+        prompt_ref_type = "alias" if re.fullmatch(_PROMPT_ALIAS_RE, prompt_ref) else "id"
         return ParsedReplyCommand(
             command="decline",
-            prompt_id=prompt_id,
+            prompt_ref=prompt_ref,
+            prompt_ref_type=prompt_ref_type,
             response_type=RESPONSE_DECLINE,
             response_text="decline",
         )
-    return None
+
+    alias_answer_match = _ALIAS_ANSWER_RE.match(raw)
+    if alias_answer_match:
+        return ParsedReplyCommand(
+            command="answer",
+            prompt_ref=alias_answer_match.group(1).strip(),
+            prompt_ref_type="alias",
+            response_type=RESPONSE_ANSWER,
+            response_text=alias_answer_match.group(2).strip(),
+        )
+    alias_approve_match = _ALIAS_APPROVE_RE.match(raw)
+    if alias_approve_match:
+        return ParsedReplyCommand(
+            command="approve",
+            prompt_ref=alias_approve_match.group(1).strip(),
+            prompt_ref_type="alias",
+            response_type=RESPONSE_APPROVE,
+            response_text="approve",
+        )
+    alias_decline_match = _ALIAS_DECLINE_RE.match(raw)
+    if alias_decline_match:
+        return ParsedReplyCommand(
+            command="decline",
+            prompt_ref=alias_decline_match.group(1).strip(),
+            prompt_ref_type="alias",
+            response_type=RESPONSE_DECLINE,
+            response_text="decline",
+        )
+
+    for pattern in (_ALIAS_PREFIX_RE, _COMMAND_PREFIX_RE):
+        match = pattern.match(raw)
+        if match is None:
+            continue
+        if pattern is _ALIAS_PREFIX_RE:
+            alias, command_raw, tail = match.group(1), match.group(2), match.group(3)
+        else:
+            command_raw, alias, tail = match.group(1), match.group(2), match.group(3)
+        command = _command_from_token(command_raw)
+        if command is None:
+            continue
+        command_name, response_type, default_text = command
+        tail_text = str(tail or "").strip()
+        if command_name == "answer":
+            if not tail_text:
+                return None
+            response_text = tail_text
+        else:
+            response_text = default_text
+        return ParsedReplyCommand(
+            command=command_name,
+            prompt_ref=str(alias).strip(),
+            prompt_ref_type="alias",
+            response_type=response_type,
+            response_text=response_text,
+        )
+
+    first_word_match = re.match(r"^\s*([a-zA-Z]+)\b", raw)
+    if first_word_match is None:
+        return None
+    command = _command_from_token(first_word_match.group(1))
+    if command is None:
+        return None
+    command_name, response_type, default_text = command
+    if command_name == "answer":
+        return None
+    return ParsedReplyCommand(
+        command=command_name,
+        prompt_ref=None,
+        prompt_ref_type=None,
+        response_type=response_type,
+        response_text=default_text,
+    )
 
 
 def is_process_alive(pid: int | None) -> bool:

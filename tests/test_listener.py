@@ -94,6 +94,158 @@ def test_process_callback_update_does_not_send_toast_for_non_choice_prompt(monke
     assert "text" not in callback_calls[0]
 
 
+def test_process_callback_custom_option_waits_for_text_then_resolves(monkeypatch, tmp_path) -> None:
+    callback_calls: list[dict[str, object]] = []
+    sent_messages: list[str] = []
+    monkeypatch.setattr(
+        listener,
+        "answer_telegram_callback_query",
+        lambda **kwargs: callback_calls.append(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        listener,
+        "send_telegram_message",
+        lambda text, **_kwargs: sent_messages.append(str(text)) or {"ok": True},
+    )
+
+    db_path = tmp_path / "telegram_inbox.db"
+    initialize_inbox_db(db_path)
+    upsert_pending_prompt(
+        session_id="session-inline-custom",
+        prompt_id="prompt-inline-custom",
+        prompt_text="Choose one",
+        prompt_kind="choice",
+        input_mode="inline",
+        callback_namespace="cb_custom",
+        choices=["A", "B"],
+        custom_text_enabled=True,
+        db_path=db_path,
+    )
+
+    cfg = TelegramConfig(bot_token="token", chat_id="trusted-chat")
+    listener._process_callback_update(
+        update_id=21,
+        callback_query={
+            "id": "cbq-custom",
+            "data": "c:cb_custom:o",
+            "from": {"id": 99},
+            "message": {"message_id": 77, "chat": {"id": "trusted-chat"}},
+        },
+        trusted_chat_id="trusted-chat",
+        config=cfg,
+        db_path=db_path,
+    )
+
+    waiting = get_pending_prompt(prompt_id="prompt-inline-custom", db_path=db_path)
+    assert waiting is not None
+    assert waiting["status"] == "waiting"
+    assert waiting["awaiting_custom_text"] == 1
+    assert waiting["awaiting_custom_text_user_id"] == "99"
+    assert len(callback_calls) == 1
+    assert callback_calls[0]["text"] == "Type your answer now."
+    assert sent_messages
+
+    listener._process_text_update(
+        update_id=22,
+        message={
+            "message_id": 78,
+            "text": "Use option C",
+            "from": {"id": 99},
+            "chat": {"id": "trusted-chat"},
+        },
+        trusted_chat_id="trusted-chat",
+        config=cfg,
+        db_path=db_path,
+    )
+    resolved = get_pending_prompt(prompt_id="prompt-inline-custom", db_path=db_path)
+    assert resolved is not None
+    assert resolved["status"] == "resolved"
+    assert resolved["response_type"] == "answer"
+    assert resolved["response_text"] == "Use option C"
+    assert resolved["awaiting_custom_text"] == 0
+
+
+def test_process_text_update_resolves_confirmation_from_natural_text(tmp_path) -> None:
+    db_path = tmp_path / "telegram_inbox.db"
+    initialize_inbox_db(db_path)
+    upsert_pending_prompt(
+        session_id="session-confirm-text",
+        prompt_id="prompt-confirm-text",
+        prompt_text="Approve change?",
+        prompt_kind="confirmation",
+        input_mode="inline",
+        choices=["Yes", "No"],
+        db_path=db_path,
+    )
+
+    listener._process_text_update(
+        update_id=31,
+        message={
+            "message_id": 88,
+            "text": "approved",
+            "from": {"id": 10},
+            "chat": {"id": "trusted-chat"},
+        },
+        trusted_chat_id="trusted-chat",
+        config=TelegramConfig(bot_token="token", chat_id="trusted-chat"),
+        db_path=db_path,
+    )
+    resolved = get_pending_prompt(prompt_id="prompt-confirm-text", db_path=db_path)
+    assert resolved is not None
+    assert resolved["status"] == "resolved"
+    assert resolved["response_type"] == "approve"
+    assert resolved["response_text"] == "approve"
+
+
+def test_process_text_update_ambiguous_confirmation_sends_guidance(monkeypatch, tmp_path) -> None:
+    sent_messages: list[str] = []
+    monkeypatch.setattr(
+        listener,
+        "send_telegram_message",
+        lambda text, **_kwargs: sent_messages.append(str(text)) or {"ok": True},
+    )
+
+    db_path = tmp_path / "telegram_inbox.db"
+    initialize_inbox_db(db_path)
+    upsert_pending_prompt(
+        session_id="session-confirm-a",
+        prompt_id="prompt-confirm-a",
+        prompt_text="Approve A?",
+        prompt_kind="confirmation",
+        input_mode="inline",
+        choices=["Yes", "No"],
+        db_path=db_path,
+    )
+    upsert_pending_prompt(
+        session_id="session-confirm-b",
+        prompt_id="prompt-confirm-b",
+        prompt_text="Approve B?",
+        prompt_kind="confirmation",
+        input_mode="inline",
+        choices=["Yes", "No"],
+        db_path=db_path,
+    )
+
+    listener._process_text_update(
+        update_id=32,
+        message={
+            "message_id": 89,
+            "text": "yes",
+            "from": {"id": 11},
+            "chat": {"id": "trusted-chat"},
+        },
+        trusted_chat_id="trusted-chat",
+        config=TelegramConfig(bot_token="token", chat_id="trusted-chat"),
+        db_path=db_path,
+    )
+    first = get_pending_prompt(prompt_id="prompt-confirm-a", db_path=db_path)
+    second = get_pending_prompt(prompt_id="prompt-confirm-b", db_path=db_path)
+    assert first is not None and second is not None
+    assert first["status"] == "waiting"
+    assert second["status"] == "waiting"
+    assert any("could not map" in msg.lower() for msg in sent_messages)
+
+
 def test_process_poll_answer_update_resolves_poll_prompt(tmp_path) -> None:
     db_path = tmp_path / "telegram_inbox.db"
     initialize_inbox_db(db_path)

@@ -120,6 +120,7 @@ Optional:
 
 #### `ask_user_confirmation`
 Send a Yes/No question via inline keyboard.
+- Listener accepts natural fallback text (`yes`, `y`, `approve`, `approved`, `no`, `n`, `decline`, `reject`), with optional 3-digit ref alias.
 
 Required:
 - `question`
@@ -133,8 +134,9 @@ Optional:
 
 #### `ask_user_choice`
 Send a multiple-choice question.
-- Uses inline keyboard for <= 4 options
-- Uses poll for > 4 options (or override via `input_mode`)
+- `allow_custom_text=true` (default): adds an `Other` button and accepts typed custom follow-up text.
+- When `allow_custom_text=true`, mode is forced to inline (even for >4 choices).
+- When `allow_custom_text=false`, auto mode uses inline for <=4 and poll for >4.
 
 Required:
 - `question`
@@ -145,6 +147,8 @@ Optional:
 - `task_name`
 - `run_id`
 - `input_mode`
+- `allow_custom_text`
+- `custom_choice_label`
 - `timeout_minutes`
 - `db_path`
 

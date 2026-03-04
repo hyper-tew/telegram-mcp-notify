@@ -15,7 +15,16 @@ import httpx
 
 from .config import TelegramConfig, load_telegram_config
 from .inbox import (
+    RESPONSE_ANSWER,
+    RESPONSE_APPROVE,
+    RESPONSE_DECLINE,
     RESPONSE_SELECTION,
+    clear_prompt_waiting_custom_text,
+    count_compatible_waiting_prompts_for_light_guess,
+    find_compatible_waiting_prompt_for_light_guess,
+    get_pending_prompt,
+    get_waiting_custom_text_prompt_for_user,
+    get_waiting_prompt_by_alias,
     get_listener_state,
     get_waiting_prompt_by_callback_namespace,
     get_waiting_prompt_by_poll_id,
@@ -24,10 +33,11 @@ from .inbox import (
     parse_reply_command,
     record_inbound_message,
     resolve_listener_log_path,
+    set_prompt_waiting_custom_text,
     set_listener_error,
     update_listener_state,
 )
-from .messaging import answer_telegram_callback_query
+from .messaging import answer_telegram_callback_query, send_telegram_message
 from .singleton import (
     SingletonAcquireError,
     SingletonLease,
@@ -40,11 +50,16 @@ SINGLETON_LOCK_NAME = "telegram_reply_listener"
 DEFAULT_SINGLETON_POLICY = "strict_single_owner"
 DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
-CALLBACK_DATA_RE = re.compile(r"^c:([A-Za-z0-9_-]{4,40}):(\d{1,2})$")
+CALLBACK_DATA_RE = re.compile(r"^c:([A-Za-z0-9_-]{4,40}):(\d{1,2}|o)$")
 CALLBACK_TOAST_TEXT_MAX_CHARS = 200
 CALLBACK_TOAST_PREFIX = "Selection confirmed: "
 CALLBACK_TOAST_FALLBACK = "Selection confirmed."
 CALLBACK_TOAST_ELLIPSIS = "..."
+CALLBACK_CUSTOM_TOAST_TEXT = "Type your answer now."
+TEXT_GUIDANCE_MESSAGE = (
+    "I could not map that reply to a single prompt. "
+    "Tap an option/button or include the Ref alias (e.g., 'yes 123' or 'answer 123 your text')."
+)
 _CURRENT_LOG_PATH: Path | None = None
 _SUPPORTED_SINGLETON_POLICIES = {"machine_kill_old", "strict_single_owner"}
 
@@ -182,14 +197,17 @@ def _extract_user_id(payload: Mapping[str, Any] | None) -> str | None:
     return str(user_id).strip() or None
 
 
-def _parse_callback_data(callback_data: str | None) -> tuple[str, int] | None:
+def _parse_callback_data(callback_data: str | None) -> tuple[str, int | None, bool] | None:
     raw = str(callback_data or "").strip()
     match = CALLBACK_DATA_RE.match(raw)
     if match is None:
         return None
     namespace = str(match.group(1)).strip()
-    option_idx = int(match.group(2))
-    return namespace, option_idx
+    token = str(match.group(2)).strip().lower()
+    if token == "o":
+        return namespace, None, True
+    option_idx = int(token)
+    return namespace, option_idx, False
 
 
 def _get_selected_options(choices: Any, option_ids: list[int]) -> list[str]:
@@ -217,6 +235,57 @@ def _build_choice_callback_toast_text(selected_option: str) -> str:
     if not trimmed_option:
         return CALLBACK_TOAST_FALLBACK
     return f"{CALLBACK_TOAST_PREFIX}{trimmed_option}{CALLBACK_TOAST_ELLIPSIS}"
+
+
+def _resolve_waiting_prompt_from_parsed_command(
+    *,
+    parsed_command: Any,
+    db_path: Path,
+) -> dict[str, Any] | None:
+    prompt_ref = str(getattr(parsed_command, "prompt_ref", "") or "").strip()
+    prompt_ref_type = str(getattr(parsed_command, "prompt_ref_type", "") or "").strip().lower()
+    if not prompt_ref:
+        return None
+    if prompt_ref_type == "id":
+        prompt = get_pending_prompt(prompt_id=prompt_ref, db_path=db_path)
+        if prompt is None:
+            return None
+        if str(prompt.get("status") or "").strip().lower() != "waiting":
+            return None
+        return prompt
+    if prompt_ref_type == "alias":
+        return get_waiting_prompt_by_alias(alias=prompt_ref, db_path=db_path)
+    return None
+
+
+def _is_response_compatible_with_prompt(
+    *,
+    response_type: str,
+    prompt: Mapping[str, Any] | None,
+) -> bool:
+    if not isinstance(prompt, Mapping):
+        return False
+    prompt_kind = str(prompt.get("prompt_kind") or "").strip().lower()
+    if response_type in {RESPONSE_APPROVE, RESPONSE_DECLINE}:
+        return prompt_kind == "confirmation"
+    if response_type == RESPONSE_ANSWER:
+        return prompt_kind != "confirmation"
+    if response_type == RESPONSE_SELECTION:
+        return prompt_kind == "choice"
+    return False
+
+
+def _send_mapping_guidance_if_needed(
+    *,
+    config: TelegramConfig,
+    chat_id: str,
+) -> None:
+    if not str(chat_id or "").strip():
+        return
+    try:
+        send_telegram_message(TEXT_GUIDANCE_MESSAGE, config=config, max_retries=1)
+    except Exception:
+        return
 
 
 def _poll_updates(
@@ -267,36 +336,98 @@ def _process_text_update(
     update_id: int,
     message: Mapping[str, Any],
     trusted_chat_id: str,
+    config: TelegramConfig,
     db_path: Path,
 ) -> None:
     chat_id = _extract_chat_id(message)
     message_id = _to_int(message.get("message_id"))
     text = _extract_text(message)
+    from_user = message.get("from")
+    from_user_id = _extract_user_id(from_user if isinstance(from_user, Mapping) else None)
+
     parsed = parse_reply_command(text)
-    accepted = bool(chat_id and chat_id == trusted_chat_id and parsed is not None)
+    parsed_command = parsed.command if parsed is not None else None
+
+    resolved_prompt: dict[str, Any] | None = None
+    response_type = str(parsed.response_type or "") if parsed is not None else ""
+    response_text = str(parsed.response_text or "") if parsed is not None else ""
+    used_light_guess = False
+    light_guess_count = 0
+
+    is_trusted_chat = bool(chat_id and chat_id == trusted_chat_id)
+    if is_trusted_chat:
+        if parsed is not None and parsed.prompt_ref:
+            resolved_prompt = _resolve_waiting_prompt_from_parsed_command(
+                parsed_command=parsed,
+                db_path=db_path,
+            )
+        if resolved_prompt is None:
+            awaiting_prompt = get_waiting_custom_text_prompt_for_user(
+                user_id=from_user_id,
+                db_path=db_path,
+            )
+            if awaiting_prompt is not None and text:
+                resolved_prompt = awaiting_prompt
+                parsed_command = "custom_text"
+                response_type = RESPONSE_ANSWER
+                response_text = text
+                clear_prompt_waiting_custom_text(
+                    prompt_id=str(awaiting_prompt.get("prompt_id") or ""),
+                    db_path=db_path,
+                )
+        if resolved_prompt is None:
+            light_guess_count = count_compatible_waiting_prompts_for_light_guess(
+                text=text,
+                db_path=db_path,
+            )
+            guessed = find_compatible_waiting_prompt_for_light_guess(
+                text=text,
+                db_path=db_path,
+            )
+            if guessed is not None:
+                resolved_prompt = guessed
+                used_light_guess = True
+                if parsed is None:
+                    parsed_command = "light_guess_answer"
+                    response_type = RESPONSE_ANSWER
+                    response_text = text
+
+    prompt_id = str(resolved_prompt.get("prompt_id") or "").strip() if resolved_prompt is not None else None
+    compatible = _is_response_compatible_with_prompt(
+        response_type=response_type,
+        prompt=resolved_prompt,
+    )
+    accepted = bool(is_trusted_chat and prompt_id and compatible and response_text)
+
     record_inbound_message(
         update_id=update_id,
         chat_id=chat_id or "unknown",
         message_id=message_id,
         text=text,
-        parsed_command=parsed.command if parsed else None,
-        prompt_id=parsed.prompt_id if parsed else None,
+        parsed_command=parsed_command,
+        prompt_id=prompt_id,
         accepted=accepted,
         update_type="message",
+        from_user_id=from_user_id,
         created_at_utc=_utc_iso_now(),
         db_path=db_path,
     )
-    if not accepted or parsed is None:
+
+    if not accepted:
+        if is_trusted_chat and (parsed is not None or light_guess_count > 1):
+            _send_mapping_guidance_if_needed(config=config, chat_id=chat_id)
         return
+
     mark_prompt_resolved(
-        prompt_id=parsed.prompt_id,
-        response_type=parsed.response_type,
-        response_text=parsed.response_text,
+        prompt_id=str(prompt_id),
+        response_type=response_type,
+        response_text=response_text,
         source_message_id=message_id,
         response_payload={
             "source": "text",
-            "command": parsed.command,
-            "response_text": parsed.response_text,
+            "command": parsed_command,
+            "response_text": response_text,
+            "light_guess": used_light_guess,
             "selected_option_ids": None,
             "selected_options": None,
         },
@@ -327,27 +458,45 @@ def _process_callback_update(
     selected_option_ids: list[int] = []
     selected_options: list[str] = []
     prompt_kind = ""
+    is_custom_choice = False
+    callback_command: str | None = None
     if callback_parsed is not None:
-        namespace, option_idx = callback_parsed
+        namespace, option_idx, is_custom_choice = callback_parsed
         prompt = get_waiting_prompt_by_callback_namespace(callback_namespace=namespace, db_path=db_path)
         if prompt is not None:
             prompt_id = str(prompt.get("prompt_id") or "").strip() or None
             prompt_kind = str(prompt.get("prompt_kind") or "").strip().lower()
-            selected_option_ids = [option_idx]
-            selected_options = _get_selected_options(prompt.get("choices"), selected_option_ids)
+            if is_custom_choice:
+                callback_command = "callback_custom_text"
+            else:
+                callback_command = "callback_select"
+                if option_idx is not None:
+                    selected_option_ids = [option_idx]
+                    selected_options = _get_selected_options(prompt.get("choices"), selected_option_ids)
 
-    accepted = bool(
+    custom_enabled = bool(int(prompt.get("custom_text_enabled") or 0)) if prompt is not None else False
+    accepted_custom = bool(
+        chat_id
+        and chat_id == trusted_chat_id
+        and prompt_id
+        and is_custom_choice
+        and prompt_kind == "choice"
+        and custom_enabled
+        and from_user_id
+    )
+    accepted_choice = bool(
         chat_id
         and chat_id == trusted_chat_id
         and prompt_id
         and selected_options
     )
+    accepted = bool(accepted_custom or accepted_choice)
     record_inbound_message(
         update_id=update_id,
         chat_id=chat_id or "unknown",
         message_id=message_id,
         text=callback_data,
-        parsed_command="callback_select" if callback_parsed else None,
+        parsed_command=callback_command if callback_parsed else None,
         prompt_id=prompt_id,
         accepted=accepted,
         update_type="callback_query",
@@ -359,7 +508,9 @@ def _process_callback_update(
     )
 
     callback_text: str | None = None
-    if accepted and prompt_kind == "choice" and selected_options:
+    if accepted_custom:
+        callback_text = CALLBACK_CUSTOM_TOAST_TEXT
+    elif accepted and prompt_kind == "choice" and selected_options:
         callback_text = _build_choice_callback_toast_text(selected_options[0])
 
     try:
@@ -376,6 +527,23 @@ def _process_callback_update(
         pass
 
     if not accepted or prompt_id is None:
+        return
+    if accepted_custom:
+        set_prompt_waiting_custom_text(
+            prompt_id=prompt_id,
+            user_id=from_user_id,
+            db_path=db_path,
+        )
+        try:
+            alias = str(prompt.get("prompt_alias") or "").strip() if isinstance(prompt, Mapping) else ""
+            prompt_hint = f"Ref #{alias}" if alias else f"prompt {prompt_id}"
+            send_telegram_message(
+                f"Type your custom answer for {prompt_hint}.",
+                config=config,
+                max_retries=1,
+            )
+        except Exception:
+            pass
         return
     selected_text = selected_options[0]
     mark_prompt_resolved(
@@ -472,6 +640,7 @@ def _process_update(
             update_id=update_id,
             message=message,
             trusted_chat_id=trusted_chat_id,
+            config=config,
             db_path=db_path,
         )
         return

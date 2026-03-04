@@ -76,6 +76,7 @@ DEFAULT_SINGLETON_RETRIES = 5
 DEFAULT_SINGLETON_RETRY_DELAY_SECONDS = 0.2
 DEFAULT_INLINE_COLUMNS = 2
 VALID_INPUT_MODES = {INPUT_MODE_POLL, INPUT_MODE_INLINE}
+DEFAULT_CUSTOM_CHOICE_LABEL = "Other (type your own)"
 LISTENER_STARTUP_TIMEOUT_SECONDS = 10.0
 LISTENER_STARTUP_POLL_SECONDS = 0.25
 LISTENER_START_MAX_ATTEMPTS = 2
@@ -1082,15 +1083,24 @@ def _build_inline_prompt_message(
     *,
     task_name: str,
     prompt_text: str,
+    prompt_kind: str,
+    prompt_alias: str | None,
+    custom_text_enabled: bool,
     expires_in_minutes: int,
 ) -> str:
     lines = [
         f"\u2753 QUESTION | {task_name}",
         str(prompt_text or "").strip() or "Please choose an option.",
+        f"Ref: #{str(prompt_alias).strip()}" if str(prompt_alias or "").strip() else "",
         "Tap one option below.",
         f"Expires in {max(1, int(expires_in_minutes))} minutes.",
     ]
-    return "\n".join(lines)
+    normalized_kind = str(prompt_kind or "").strip().lower()
+    if normalized_kind == "confirmation":
+        lines.append("You can also type yes/no with optional ref (for example: yes 123).")
+    if normalized_kind == "choice" and bool(custom_text_enabled):
+        lines.append("You can also type your own answer (option: Other).")
+    return "\n".join(line for line in lines if line)
 
 
 def _new_callback_namespace() -> str:
@@ -1102,6 +1112,8 @@ def _build_inline_keyboard(
     callback_namespace: str,
     choices: list[str],
     inline_columns: int,
+    custom_text_enabled: bool = False,
+    custom_choice_label: str = DEFAULT_CUSTOM_CHOICE_LABEL,
 ) -> list[list[dict[str, str]]]:
     columns = max(1, min(int(inline_columns), 4))
     rows: list[list[dict[str, str]]] = []
@@ -1114,6 +1126,12 @@ def _build_inline_keyboard(
             rows.append([button])
         else:
             rows[-1].append(button)
+    if bool(custom_text_enabled):
+        label = str(custom_choice_label or DEFAULT_CUSTOM_CHOICE_LABEL).strip() or DEFAULT_CUSTOM_CHOICE_LABEL
+        callback_data = f"c:{callback_namespace}:o"
+        if len(callback_data.encode("utf-8")) > MAX_CALLBACK_DATA_BYTES:
+            raise ValueError("Generated callback_data exceeded Telegram 64-byte limit.")
+        rows.append([{"text": label, "callback_data": callback_data}])
     return rows
 
 
@@ -1163,6 +1181,8 @@ def _register_pending_prompt(
     prompt_kind: str = "question",
     choices: list[str] | None = None,
     input_mode: str = INPUT_MODE_INLINE,
+    custom_text_enabled: bool = False,
+    custom_choice_label: str = DEFAULT_CUSTOM_CHOICE_LABEL,
     allows_multiple_answers: bool = False,
     inline_columns: int = DEFAULT_INLINE_COLUMNS,
     expires_at_utc: str | None = None,
@@ -1182,14 +1202,24 @@ def _register_pending_prompt(
         normalized_input_mode = _normalize_input_mode(input_mode)
         if normalized_input_mode not in VALID_INPUT_MODES:
             return {"ok": False, "error": f"Unsupported input_mode: {input_mode}"}
+        normalized_custom_text_enabled = bool(custom_text_enabled)
+        normalized_custom_choice_label = (
+            str(custom_choice_label or DEFAULT_CUSTOM_CHOICE_LABEL).strip() or DEFAULT_CUSTOM_CHOICE_LABEL
+        )
+        if len(normalized_custom_choice_label) > 80:
+            normalized_custom_choice_label = normalized_custom_choice_label[:80].rstrip()
 
         normalized_choices = _normalize_choices(choices)
         if normalized_input_mode in {INPUT_MODE_POLL, INPUT_MODE_INLINE} and not normalized_choices:
             return {"ok": False, "error": f"choices are required when input_mode={normalized_input_mode}"}
+        if normalized_custom_text_enabled and normalized_input_mode == INPUT_MODE_POLL:
+            normalized_input_mode = INPUT_MODE_INLINE
         if normalized_input_mode == INPUT_MODE_POLL and len(normalized_choices) > MAX_POLL_OPTIONS:
             return {"ok": False, "error": "Poll input mode supports at most 12 options."}
         if normalized_input_mode == INPUT_MODE_INLINE and not (1 <= int(inline_columns) <= 4):
             return {"ok": False, "error": "inline_columns must be between 1 and 4."}
+        if normalized_input_mode != INPUT_MODE_INLINE:
+            normalized_custom_text_enabled = False
 
         initialize_inbox_db(db_path)
         normalized_expires_in_minutes = int(expires_in_minutes)
@@ -1212,6 +1242,7 @@ def _register_pending_prompt(
             prompt_kind=prompt_kind,
             choices=normalized_choices,
             input_mode=normalized_input_mode,
+            custom_text_enabled=normalized_custom_text_enabled,
             callback_namespace=callback_namespace,
             expires_at_utc=ttl_target,
             db_path=db_path,
@@ -1239,12 +1270,17 @@ def _register_pending_prompt(
                 msg = _build_inline_prompt_message(
                     task_name=resolved_task,
                     prompt_text=normalized_prompt_text,
+                    prompt_kind=prompt_kind,
+                    prompt_alias=str(record.get("prompt_alias") or "").strip() or None,
+                    custom_text_enabled=normalized_custom_text_enabled,
                     expires_in_minutes=display_expiry_minutes,
                 )
                 keyboard = _build_inline_keyboard(
                     callback_namespace=str(callback_namespace),
                     choices=normalized_choices,
                     inline_columns=int(inline_columns),
+                    custom_text_enabled=normalized_custom_text_enabled,
+                    custom_choice_label=normalized_custom_choice_label,
                 )
                 delivery = send_telegram_inline_keyboard(
                     text=msg,
@@ -1280,7 +1316,9 @@ def _register_pending_prompt(
             "status": record.get("status"),
             "session_id": record.get("session_id"),
             "run_id": record.get("run_id"),
+            "prompt_alias": record.get("prompt_alias"),
             "input_mode": record.get("input_mode"),
+            "custom_text_enabled": bool(int(record.get("custom_text_enabled") or 0)),
             "expires_at_utc": record.get("expires_at_utc"),
             "telegram_message_id": record.get("telegram_message_id"),
             "telegram_poll_id": record.get("telegram_poll_id"),
@@ -1328,9 +1366,11 @@ def check_pending_prompt(
         return {
             "ok": True,
             "prompt_id": record.get("prompt_id"),
+            "prompt_alias": record.get("prompt_alias"),
             "session_id": record.get("session_id"),
             "run_id": record.get("run_id"),
             "input_mode": record.get("input_mode"),
+            "custom_text_enabled": bool(int(record.get("custom_text_enabled") or 0)),
             "status": record.get("status"),
             "response_type": record.get("response_type"),
             "response_text": record.get("response_text"),
@@ -1512,6 +1552,7 @@ def ask_user_confirmation(
     description=(
         "Send a multiple-choice question to the user via Telegram. "
         "Uses inline keyboard for <=4 choices, poll for >4 (or set input_mode explicitly). "
+        "When allow_custom_text=true, includes an 'Other' option and accepts custom text replies. "
         "Returns the prompt_id for later checking with check_pending_prompt."
     ),
 )
@@ -1522,6 +1563,8 @@ def ask_user_choice(
     task_name: str | None = None,
     run_id: str | None = None,
     input_mode: str = "auto",
+    allow_custom_text: bool = True,
+    custom_choice_label: str = DEFAULT_CUSTOM_CHOICE_LABEL,
     timeout_minutes: int = DEFAULT_PROMPT_EXPIRY_MINUTES,
     db_path: str | None = None,
 ) -> dict[str, Any]:
@@ -1537,8 +1580,14 @@ def ask_user_choice(
             return {"ok": False, "error": "At least 2 choices are required."}
 
         mode = str(input_mode or "auto").strip().lower()
+        custom_enabled = bool(allow_custom_text)
         if mode == "auto":
-            mode = INPUT_MODE_INLINE if len(normalized_choices) <= 4 else INPUT_MODE_POLL
+            if custom_enabled:
+                mode = INPUT_MODE_INLINE
+            else:
+                mode = INPUT_MODE_INLINE if len(normalized_choices) <= 4 else INPUT_MODE_POLL
+        if custom_enabled and mode == INPUT_MODE_POLL:
+            mode = INPUT_MODE_INLINE
 
         return _register_pending_prompt(
             session_id=normalized_session_id,
@@ -1548,6 +1597,8 @@ def ask_user_choice(
             prompt_kind="choice",
             choices=normalized_choices,
             input_mode=mode,
+            custom_text_enabled=custom_enabled,
+            custom_choice_label=custom_choice_label,
             expires_in_minutes=max(1, int(timeout_minutes)),
             send_notification=True,
             ensure_listener=True,
@@ -1642,6 +1693,7 @@ def telegram_notify_capabilities() -> dict[str, Any]:
             "listener_lifecycle": True,
             "listener_stop_restart": True,
             "sync_wait_for_prompt": True,
+            "custom_choice_text": True,
         },
     }
 

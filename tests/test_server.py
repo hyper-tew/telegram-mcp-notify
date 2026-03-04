@@ -168,6 +168,56 @@ def test_register_pending_prompt_inline_mode_builds_callback_buttons(monkeypatch
     assert keyboard[0][0]["callback_data"].startswith("c:cb_")
 
 
+def test_ask_user_choice_with_custom_text_adds_other_button_and_alias(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_send_inline(text, inline_keyboard, *, config, max_retries=1):
+        captured["text"] = text
+        captured["inline_keyboard"] = inline_keyboard
+        return {"ok": True, "status_code": 200, "message_id": 301, "error": None}
+
+    monkeypatch.setattr(server, "load_telegram_config", lambda: SimpleNamespace())
+    monkeypatch.setattr(server, "send_telegram_inline_keyboard", _fake_send_inline)
+    monkeypatch.setattr(
+        server,
+        "_ensure_listener_running",
+        lambda db_path=None, self_heal=True: {
+            "ok": True,
+            "running": True,
+            "started": False,
+            "startup_confirmed": True,
+            "attempts": 0,
+            "diagnostics": {},
+        },
+    )
+
+    db_path = str(tmp_path / "telegram_inbox.db")
+    created = server.ask_user_choice(
+        question="Pick one",
+        choices=["A", "B", "C", "D", "E"],
+        session_id="session-custom",
+        custom_choice_label="Other (my answer)",
+        db_path=db_path,
+    )
+    assert created["ok"] is True
+    assert created["input_mode"] == "inline"
+    assert created["custom_text_enabled"] is True
+    assert str(created.get("prompt_alias") or "").isdigit()
+    assert len(str(created.get("prompt_alias") or "")) == 3
+
+    prompt_id = str(created["prompt_id"])
+    checked = server.check_pending_prompt(session_id="session-custom", prompt_id=prompt_id, db_path=db_path)
+    assert checked["ok"] is True
+    assert checked["prompt_alias"] == created["prompt_alias"]
+    assert checked["custom_text_enabled"] is True
+
+    keyboard = captured["inline_keyboard"]
+    assert isinstance(keyboard, list)
+    assert keyboard[-1][0]["text"] == "Other (my answer)"
+    assert keyboard[-1][0]["callback_data"].endswith(":o")
+    assert f"Ref: #{created['prompt_alias']}" in str(captured["text"])
+
+
 def test_ask_user_choice_auto_selects_mode(monkeypatch, tmp_path) -> None:
     captured: dict[str, object] = {}
 
@@ -205,6 +255,8 @@ def test_ask_user_choice_auto_selects_mode(monkeypatch, tmp_path) -> None:
     )
     assert result["ok"] is True
     assert captured["mode"] == "inline"
+    assert result["input_mode"] == "inline"
+    assert result["custom_text_enabled"] is True
 
     captured.clear()
     result = server.ask_user_choice(
@@ -214,7 +266,22 @@ def test_ask_user_choice_auto_selects_mode(monkeypatch, tmp_path) -> None:
         db_path=db_path,
     )
     assert result["ok"] is True
+    assert captured["mode"] == "inline"
+    assert result["input_mode"] == "inline"
+    assert result["custom_text_enabled"] is True
+
+    captured.clear()
+    result = server.ask_user_choice(
+        question="Pick many (poll)",
+        choices=["A", "B", "C", "D", "E"],
+        session_id="session-choice",
+        allow_custom_text=False,
+        db_path=db_path,
+    )
+    assert result["ok"] is True
     assert captured["mode"] == "poll"
+    assert result["input_mode"] == "poll"
+    assert result["custom_text_enabled"] is False
 
 
 def test_run_server_with_singleton_invokes_server_and_releases_lease(monkeypatch) -> None:
