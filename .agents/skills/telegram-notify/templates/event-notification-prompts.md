@@ -32,7 +32,7 @@ Inputs:
 
 ```text
 event=question
-message first line: QUESTION | <task_name> | <summary>
+message first line: ❓ QUESTION | <task_name> | <summary>
 Use concise wording and include exactly one requested decision in details.
 ```
 
@@ -40,7 +40,7 @@ Use concise wording and include exactly one requested decision in details.
 
 ```text
 event=plan_ready
-message first line: PLAN READY | <task_name> | <summary>
+message first line: 🧭 PLAN READY | <task_name> | <summary>
 Include high-level scope and expected next action.
 ```
 
@@ -48,7 +48,7 @@ Include high-level scope and expected next action.
 
 ```text
 event=final
-message first line: FINAL | <task_name> | <summary>
+message first line: ✅ FINAL | <task_name> | <summary>
 Include completion status and validation result in details.
 ```
 
@@ -56,7 +56,7 @@ Include completion status and validation result in details.
 
 ```text
 event=attention_needed
-message first line: ATTENTION | <task_name> | <summary>
+message first line: 🚨 ATTENTION | <task_name> | <summary>
 Include blocking reason and immediate action required.
 ```
 
@@ -64,8 +64,28 @@ Include blocking reason and immediate action required.
 
 ```text
 event=error
-message first line: ERROR | <task_name> | <summary>
+message first line: ❌ ERROR | <task_name> | <summary>
 Include failing step, observed error, and retry/mitigation guidance.
+```
+
+## Message-type capability tags (use when needed)
+
+Add one capability emoji when the message content references a specific Telegram method:
+
+- 📝 `sendMessage` (text notifications)
+- 🖼️ `sendPhoto`
+- 🎞️ `sendVideo`
+- 🧾 `sendDocument`
+- 🎵 `sendAudio`
+- 🎙️ `sendVoice`
+- 🎬 `sendAnimation`
+- 📊 `sendPoll`
+- 📍 `sendLocation`
+
+Example:
+
+```text
+✅ FINAL 📝 | release-task | Notification sent
 ```
 
 ## Message variants
@@ -73,13 +93,13 @@ Include failing step, observed error, and retry/mitigation guidance.
 Compact variant:
 
 ```text
-EVENT | task-name | summary
+EMOJI EVENT | task-name | summary
 ```
 
 Detailed variant:
 
 ```text
-EVENT | task-name | summary
+EMOJI EVENT | task-name | summary
 - detail line 1
 - detail line 2
 - detail line 3

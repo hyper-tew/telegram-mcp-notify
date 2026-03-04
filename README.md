@@ -32,6 +32,94 @@ If you need the runnable Python MCP server, use `main`.
    - `disable_notification`
    - `reply_markup`
 
+## Setup credentials (Windows)
+
+Set credentials as environment variables so agents can read them without hardcoding secrets.
+
+### User scope (recommended)
+
+```powershell
+[Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN","<your-bot-token>","User")
+[Environment]::SetEnvironmentVariable("TELEGRAM_CHAT_ID","<your-chat-id>","User")
+```
+
+### Machine scope (optional, requires admin)
+
+```powershell
+[Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN","<your-bot-token>","Machine")
+[Environment]::SetEnvironmentVariable("TELEGRAM_CHAT_ID","<your-chat-id>","Machine")
+```
+
+### Verify values are visible
+
+```powershell
+[Environment]::GetEnvironmentVariable("TELEGRAM_BOT_TOKEN","User")
+[Environment]::GetEnvironmentVariable("TELEGRAM_CHAT_ID","User")
+```
+
+Restart your terminal, Cursor, or Codex after setting variables.
+
+## Install this skill (directly from this GitHub branch)
+
+Branch used in commands below:
+
+```text
+feature/telegram-http-skill-only
+```
+
+### Codex global install (Windows PowerShell)
+
+```powershell
+$ErrorActionPreference = "Stop"
+$Repo = "https://github.com/hyper-tew/telegram-mcp-notify.git"
+$Branch = "feature/telegram-http-skill-only"
+$TempDir = Join-Path $env:TEMP ("telegram-notify-skill-" + [guid]::NewGuid().ToString("N"))
+
+if (-not (Test-NetConnection github.com -Port 443 -InformationLevel Quiet)) {
+  throw "Cannot reach github.com:443. Check network/VPN/proxy and retry."
+}
+
+git clone --depth 1 --branch $Branch $Repo $TempDir
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$TempDir\.agents\skills\telegram-notify")) {
+  throw "Clone failed. Skill files were not downloaded."
+}
+
+New-Item -ItemType Directory -Force "$HOME\\.codex\\skills\\telegram-notify" | Out-Null
+Copy-Item "$TempDir\\.agents\\skills\\telegram-notify\\*" "$HOME\\.codex\\skills\\telegram-notify" -Recurse -Force
+Remove-Item $TempDir -Recurse -Force
+```
+
+### Cursor global install (Windows PowerShell)
+
+```powershell
+$ErrorActionPreference = "Stop"
+$Repo = "https://github.com/hyper-tew/telegram-mcp-notify.git"
+$Branch = "feature/telegram-http-skill-only"
+$TempDir = Join-Path $env:TEMP ("telegram-notify-skill-" + [guid]::NewGuid().ToString("N"))
+
+if (-not (Test-NetConnection github.com -Port 443 -InformationLevel Quiet)) {
+  throw "Cannot reach github.com:443. Check network/VPN/proxy and retry."
+}
+
+git clone --depth 1 --branch $Branch $Repo $TempDir
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path "$TempDir\.agents\skills\telegram-notify")) {
+  throw "Clone failed. Skill files were not downloaded."
+}
+
+New-Item -ItemType Directory -Force "$HOME\\.cursor\\skills\\telegram-notify" | Out-Null
+Copy-Item "$TempDir\\.agents\\skills\\telegram-notify\\*" "$HOME\\.cursor\\skills\\telegram-notify" -Recurse -Force
+Remove-Item $TempDir -Recurse -Force
+```
+
+Restart Codex/Cursor after install so the client reloads skill files.
+
+### If GitHub is blocked, install from a local folder
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\\.codex\\skills\\telegram-notify" | Out-Null
+Copy-Item "D:\\path\\to\\telegram-mcp-notify\\.agents\\skills\\telegram-notify\\*" "$HOME\\.codex\\skills\\telegram-notify" -Recurse -Force
+```
+
 ## Request primer (`sendMessage`)
 
 Canonical endpoint:

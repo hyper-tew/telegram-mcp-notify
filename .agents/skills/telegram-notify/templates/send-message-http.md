@@ -1,5 +1,31 @@
 # Telegram `sendMessage` HTTP Template
 
+## Bot message capabilities (Telegram Bot API)
+
+Use this quick map when selecting a method:
+
+- 📝 Text: `sendMessage`
+- 🖼️ Photo: `sendPhoto`
+- 🎞️ Video: `sendVideo`
+- 🧾 Document/File: `sendDocument`
+- 🎵 Audio track: `sendAudio`
+- 🎙️ Voice note: `sendVoice`
+- 🎬 Animation/GIF: `sendAnimation`
+- 🧩 Sticker: `sendSticker`
+- 🗂️ Album (2-10 media items): `sendMediaGroup`
+- 📍 Location: `sendLocation`
+- 🏢 Venue: `sendVenue`
+- 👤 Contact: `sendContact`
+- 🎲 Dice: `sendDice`
+- 📊 Poll: `sendPoll` (close with `stopPoll`)
+- 🔁 Copy/forward existing messages: `copyMessage`, `copyMessages`, `forwardMessage`, `forwardMessages`
+- ✏️ Edit sent messages: `editMessageText`, `editMessageCaption`, `editMessageMedia`, `editMessageReplyMarkup`
+- 🗑️ Delete messages: `deleteMessage`
+- 📌 Pin/unpin messages: `pinChatMessage`, `unpinChatMessage`
+- 👍 React to messages: `setMessageReaction`
+
+For checkpoint notifications, default to 📝 `sendMessage` unless the prompt explicitly requests another type.
+
 ## Input schema
 
 Required fields:
@@ -18,17 +44,18 @@ Optional fields:
 ## Deterministic generation steps
 
 1. Validate required fields exist.
-2. Build endpoint as:
-   - `https://api.telegram.org/bot<bot_token>/sendMessage`
-3. Set HTTP method:
+2. Select method from the capability map (default: `sendMessage`).
+3. Build endpoint as:
+   - `https://api.telegram.org/bot<bot_token>/<selected_method>`
+4. Set HTTP method:
    - `POST`
-4. Set headers:
+5. Set headers:
    - `Content-Type: application/json`
-5. Build JSON body with required fields first:
+6. Build JSON body with required fields first:
    - `chat_id`, `text`
-6. Add optional fields only when provided.
-7. Redact `bot_token` in all displayed outputs.
-8. Provide retry guidance for rate-limit responses.
+7. Add optional fields only when provided.
+8. Redact `bot_token` in all displayed outputs.
+9. Provide retry guidance for rate-limit responses.
 
 ## Output template
 
@@ -36,7 +63,7 @@ Use this structure in agent responses:
 
 ```text
 Endpoint:
-https://api.telegram.org/bot<redacted-token>/sendMessage
+https://api.telegram.org/bot<redacted-token>/<selected_method>
 
 Method:
 POST
