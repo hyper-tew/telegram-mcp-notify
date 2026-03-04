@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "telegram-mcp-notify"
-version = "0.1.0"
-description = "Telegram notification MCP server with reply listener for AI coding agents"
+version = "0.2.0"
+description = "Notify-only Telegram notification MCP server for AI coding agents"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
@@ -22,7 +22,6 @@ dev = [
 
 [project.scripts]
 telegram-mcp-notify = "telegram_mcp_notify.server:main"
-telegram-mcp-listener = "telegram_mcp_notify.listener:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/telegram_mcp_notify"]
