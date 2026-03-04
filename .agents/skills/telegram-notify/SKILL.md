@@ -1,61 +1,111 @@
 ---
 name: telegram-notify
 description: >
-  Send Telegram notifications via the telegram_notify MCP server in notify-only mode.
-  Use for question/plan/final checkpoints and critical manual-attention alerts.
+  Formulate Telegram Bot API HTTP requests for outbound notifications.
+  Use this skill when an agent must produce deterministic `sendMessage` requests, including
+  parse-mode handling, retry policy, and safe redaction of secrets.
 triggers:
-  - telegram notification
-  - send notification
-  - notify user
-  - notify-only
-  - checkpoint notification
+  - telegram bot api
+  - sendmessage
+  - formulate http request
+  - telegram notification payload
+  - telegram parse mode
 ---
 
-# Telegram Notify Skill (Notify-Only)
+# Telegram Notify Skill (HTTP Formulation)
 
-Use the `telegram_notify` MCP server for outbound notifications only.
+Use this skill to generate Telegram Bot API requests. This branch does not provide MCP runtime tools.
 
-## Runtime Capability Gate (Mandatory)
-
-- Preferred preflight: `telegram_notify_capabilities`.
-- Required minimum tools:
-  - `send_telegram_notification`
-  - `telegram_notify_capabilities`
-- Do not use or claim Telegram input/listener workflows in this mode.
-
-## Notification Policy (Mandatory)
-
-Use `send_telegram_notification` only at meaningful checkpoints:
-
-- `event=question`: before a direct user question
-- `event=plan_ready`: before presenting a plan
-- `event=final`: when task is completed
-- `event=error`: only when manual user attention is required
-- `event=attention_needed`: only when manual user attention is required
-
-Do not notify routine progress chatter.
-
-## MCP-Tool-First Policy (Mandatory)
-
-When Telegram MCP tools are available, use MCP tools directly.
-
-- Do not bypass MCP with local Python or direct Telegram HTTP calls.
-- If MCP is unavailable, state the failure reason and continue in-chat.
-
-## Tool Reference
-
-### `send_telegram_notification`
+## Inputs
 
 Required:
-- `event`
-- `message`
+
+- `bot_token`
+- `chat_id`
+- `text`
 
 Optional:
-- `task_name`
-- `session_id`
-- `run_id`
-- `requires_action`
 
-### `telegram_notify_capabilities`
+- `parse_mode` (`HTML` or `MarkdownV2`)
+- `disable_notification` (`true` or `false`)
+- `reply_markup` (JSON object)
+- `message_thread_id` (forum topic support)
 
-Use this to verify runtime capability before claiming notify behavior.
+## Canonical endpoint
+
+```text
+https://api.telegram.org/bot<token>/METHOD_NAME
+```
+
+Primary method for this skill:
+
+- `sendMessage`
+
+## Event mapping
+
+Use these event labels in message text:
+
+- `question`
+- `plan_ready`
+- `final`
+- `attention_needed`
+- `error`
+
+Recommended first line format:
+
+```text
+EVENT | task-name | short summary
+```
+
+## Formatting rules
+
+### HTML (`parse_mode=HTML`)
+
+- Escape unsupported literal symbols:
+  - `<` -> `&lt;`
+  - `>` -> `&gt;`
+  - `&` -> `&amp;`
+  - `"` -> `&quot;`
+- Use only supported Telegram HTML tags.
+
+### MarkdownV2 (`parse_mode=MarkdownV2`)
+
+Escape reserved characters with backslash in normal text:
+
+```text
+_ * [ ] ( ) ~ ` > # + - = | { } . !
+```
+
+Inside inline links, escape `)` and `\` where required.
+
+## Failure handling policy
+
+For any `ok=false` response:
+
+1. Surface `error_code` and `description`.
+2. If `parameters.retry_after` exists, wait that many seconds and retry.
+3. If `parameters.migrate_to_chat_id` exists, update `chat_id` and resend.
+4. Keep retries bounded and report final failure details.
+
+## Output contract
+
+When this skill is used, output must include:
+
+1. Endpoint URL (token redacted)
+2. HTTP method
+3. Headers
+4. JSON body
+5. `curl` example
+6. PowerShell `Invoke-RestMethod` example
+7. Success and failure response interpretation
+
+## Safety rules
+
+- Never print full bot tokens. Show redacted form, for example: `123456:ABC...`.
+- Redact secrets from logs and docs.
+- Do not invent API fields. Use Telegram Bot API documented parameters.
+
+## Template references
+
+- `templates/send-message-http.md`
+- `templates/event-notification-prompts.md`

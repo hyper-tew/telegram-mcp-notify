@@ -1,7 +1,7 @@
 name: telegram-notify
-description: Notify-only Telegram checkpoint notifications through the telegram_notify MCP server.
+description: Formulate Telegram Bot API HTTP request payloads for checkpoint notifications.
 instructions: SKILL.md
 dependencies:
-  mcp_tools:
-    - telegram_notify:send_telegram_notification
-    - telegram_notify:telegram_notify_capabilities
+  docs:
+    - https://core.telegram.org/bots/features
+    - https://core.telegram.org/bots/api
