@@ -1,144 +1,141 @@
-# telegram-mcp-notify
+# telegram-mcp-notify (skill/prompt-only branch)
 
-Notify-only Telegram MCP server for AI coding agents (Cursor, Codex, Claude Code).
+This branch is intentionally a docs-and-skill variant. It does not ship a runtime MCP server.
 
-## IMPORTANT DISCLAIMER (WIP / SELF-USE)
+The goal is to help agents formulate correct Telegram Bot API HTTP requests for notification messages using prompt instructions and templates.
 
-> [!WARNING]
-> This repository is still in active development and currently intended for personal/self use and experimentation.
-> APIs and behavior may change without notice.
-> Use at your own risk.
+If you need the runnable Python MCP server, use `main`.
 
-## Breaking Changes in 0.2.0
+## Branch intent
 
-- Removed console script: `telegram-mcp-listener`
-- Removed reply/input internals (`inbox`, listener lifecycle, pending prompts)
-- Removed singleton lock behavior for server startup
+- No Python package runtime in this branch
+- One core skill: `telegram-notify`
+- Prompt templates for deterministic request generation
+- Reference docs and examples for `sendMessage`
 
-## Features
+## Source grounding
 
-- Outbound Telegram notifications for:
-  - `question`
-  - `plan_ready`
-  - `final`
-  - `attention_needed`
-  - `error`
-- Notify-only MCP surface:
-  - `send_telegram_notification`
-  - `telegram_notify_capabilities`
-- Cross-platform runtime (Windows and POSIX)
+- Telegram Bot Features: <https://core.telegram.org/bots/features>
+- Telegram Bot API: <https://core.telegram.org/bots/api>
+- Context7 reference used for this branch: `/websites/core_telegram_bots_api`
 
-## Prerequisites
+## Quick start
 
-- Python 3.11+
-- `uv` / `uvx` (recommended) or `pip`
-- Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- Telegram chat ID
+1. Use `.agents/skills/telegram-notify/SKILL.md` as the agent behavior contract.
+2. Reuse templates from `.agents/skills/telegram-notify/templates/`.
+3. Generate outbound requests for `sendMessage` with required inputs:
+   - `bot_token`
+   - `chat_id`
+   - `text`
+4. Add optional request fields as needed:
+   - `parse_mode`
+   - `disable_notification`
+   - `reply_markup`
 
-## Quick Start: Cursor
+## Request primer (`sendMessage`)
 
-Create `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` globally):
+Canonical endpoint:
+
+```text
+https://api.telegram.org/bot<token>/sendMessage
+```
+
+Minimal JSON payload:
 
 ```json
 {
-  "mcpServers": {
-    "telegram_notify": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "git+https://github.com/hyper-tew/telegram-mcp-notify",
-        "telegram-mcp-notify"
-      ],
-      "env": {
-        "TELEGRAM_BOT_TOKEN": "123456:ABC-DEF...",
-        "TELEGRAM_CHAT_ID": "123456789"
-      }
-    }
+  "chat_id": "123456789",
+  "text": "Build finished: all checks passed."
+}
+```
+
+### cURL example
+
+```bash
+curl -sS -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chat_id": "'"${TELEGRAM_CHAT_ID}"'",
+    "text": "FINAL | release-task | Build finished",
+    "disable_notification": false
+  }'
+```
+
+### PowerShell example
+
+```powershell
+$uri = "https://api.telegram.org/bot$env:TELEGRAM_BOT_TOKEN/sendMessage"
+$body = @{
+  chat_id = $env:TELEGRAM_CHAT_ID
+  text = "FINAL | release-task | Build finished"
+  disable_notification = $false
+} | ConvertTo-Json
+
+Invoke-RestMethod -Method Post -Uri $uri -ContentType "application/json" -Body $body
+```
+
+## Environment variable guidance
+
+Recommended local variables for examples:
+
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `TELEGRAM_PARSE_MODE` (optional)
+- `TELEGRAM_DISABLE_NOTIFICATION` (optional)
+
+Never print full bot tokens in logs, docs, or chat messages.
+
+## Event notification templates
+
+| Event | Prefix | Typical intent |
+|---|---|---|
+| `question` | `QUESTION` | Ask for a decision or missing input |
+| `plan_ready` | `PLAN READY` | Announce a completed plan |
+| `final` | `FINAL` | Mark task completion |
+| `attention_needed` | `ATTENTION` | Manual intervention required |
+| `error` | `ERROR` | Failure summary and next action |
+
+Example text format:
+
+```text
+EVENT | task-name | short summary
+detail line 1
+detail line 2
+```
+
+## Response handling checklist
+
+Success shape:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "message_id": 123
   }
 }
 ```
 
-Restart Cursor after saving.
+Failure shape:
 
-## Quick Start: Codex
-
-Add to `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.telegram_notify]
-command = "uvx"
-args = ["--from", "git+https://github.com/hyper-tew/telegram-mcp-notify", "telegram-mcp-notify"]
-
-[mcp_servers.telegram_notify.env]
-TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
-TELEGRAM_CHAT_ID = "123456789"
+```json
+{
+  "ok": false,
+  "error_code": 429,
+  "description": "Too Many Requests: retry after 10",
+  "parameters": {
+    "retry_after": 10
+  }
+}
 ```
 
-Or via CLI:
+If present:
 
-```bash
-codex mcp add telegram_notify \
-  --env TELEGRAM_BOT_TOKEN=123456:ABC-DEF... \
-  --env TELEGRAM_CHAT_ID=123456789 \
-  -- uvx --from "git+https://github.com/hyper-tew/telegram-mcp-notify" telegram-mcp-notify
-```
+- `parameters.retry_after`: wait then retry
+- `parameters.migrate_to_chat_id`: resend to migrated chat ID
 
-## Alternative: Pre-install with pip
+## Compatibility note
 
-```bash
-# From GitHub
-pip install git+https://github.com/hyper-tew/telegram-mcp-notify.git
+This branch is instruction-based only. It replaces runtime interfaces with skill and prompt artifacts.
 
-# From local clone
-pip install ./telegram-mcp-notify
-
-# Development
-pip install -e "./telegram-mcp-notify[dev]"
-```
-
-Then use Python module mode in MCP config:
-
-```toml
-[mcp_servers.telegram_notify]
-command = "python"
-args = ["-m", "telegram_mcp_notify.server"]
-
-[mcp_servers.telegram_notify.env]
-TELEGRAM_BOT_TOKEN = "123456:ABC-DEF..."
-TELEGRAM_CHAT_ID = "123456789"
-```
-
-## Environment Variables
-
-Required:
-
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-
-Optional:
-
-| Variable | Default | Description |
-|---|---|---|
-| `TELEGRAM_PARSE_MODE` | None | Message parse mode (`HTML` or `Markdown`) |
-| `TELEGRAM_DISABLE_NOTIFICATION` | `false` | Suppress outbound notifications |
-| `TELEGRAM_TIMEOUT_SECONDS` | `10` | HTTP request timeout |
-
-## Available Tools
-
-| Tool | Description |
-|---|---|
-| `send_telegram_notification` | Send a structured Telegram checkpoint notification |
-| `telegram_notify_capabilities` | Return current server tool/capability surface |
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| No notifications received | Invalid token/chat ID | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
-| Unexpected tools shown | Running old package version | Upgrade/restart MCP runtime |
-| `spawn telegram-mcp-notify ENOENT` | Executable not on PATH | Use `uvx ... telegram-mcp-notify` or `python -m telegram_mcp_notify.server` |
-| `spawn uvx ENOENT` | `uv` not installed/on PATH | Install `uv` and restart the client app |
-
-## License
-
-MIT
+For executable MCP behavior (`telegram_mcp_notify`, console script, server tools), switch to `main`.
