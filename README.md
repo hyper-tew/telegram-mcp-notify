@@ -1,6 +1,8 @@
 # telegram-mcp-notify
 
-Telegram notification MCP server with bidirectional reply support for AI coding agents (Cursor, Codex, Claude Code).
+Telegram notification MCP server for AI coding agents (Cursor, Codex, Claude Code).
+
+> Branch note: `feature/notify-only` is a notify-only variant. Telegram reply/input tools are intentionally not exposed.
 
 ## IMPORTANT DISCLAIMER (WIP / SELF-USE)
 
@@ -12,14 +14,10 @@ Telegram notification MCP server with bidirectional reply support for AI coding 
 
 ## Features
 
-- **Outbound notifications**: Send structured Telegram messages for questions, plans, errors, final results, and attention-needed events.
-- **Inbound replies**: Receive responses via natural text, inline keyboards, or polls.
-- **Core input tools**: `ask_user_confirmation` and `ask_user_choice` for interactive decisions.
-- **Natural mapping**: Supports flexible references like `yes 123`, `123 approve`, and `answer 123 <text>`.
-- **Custom MCQ answer**: `ask_user_choice` can include an `Other` button that captures typed follow-up text.
-- **Singleton lifecycle**: File-based locking ensures only one server/listener runs at a time.
-- **Self-healing listener**: Automatic stale PID/lock cleanup and restart.
-- **Cross-platform**: Works on Windows (msvcrt) and POSIX (fcntl).
+- **Outbound notifications**: Send structured Telegram messages for `question`, `plan_ready`, `final`, and critical manual-attention alerts.
+- **Notify-only MCP surface**: Exposes only `send_telegram_notification` and `telegram_notify_capabilities`.
+- **Low-noise workflow**: Designed for checkpoint notifications, not routine progress spam.
+- **Cross-platform**: Works on Windows and POSIX.
 
 ## Prerequisites
 
@@ -284,16 +282,11 @@ Restart Cursor or Codex after installing the skill.
    - `codex mcp get telegram_notify`
    - Ensure the command points to the full server entrypoint (`telegram-mcp-notify`, `uvx ... telegram-mcp-notify`, or your wrapper that imports `telegram_mcp_notify.server`).
 2. Verify tool coverage in runtime:
-   - Full input mode should expose `ask_user_confirmation` / `ask_user_choice` and `check_pending_prompt`.
-   - If only `send_telegram_notification` is exposed, treat it as notify-only mode and do not claim reply listening.
+   - Notify-only mode should expose only `send_telegram_notification` and `telegram_notify_capabilities`.
 3. Restart Codex/Cursor after MCP or skill file changes.
-4. Plan Mode clarification routing policy:
-   - In Plan Mode, direct clarification questions should be sent through Telegram input tools first.
-   - Recommended type-aware routing: binary -> `ask_user_confirmation`; 3+ options -> `ask_user_choice`; free-form falls back to `request_user_input`.
-   - Ask Telegram questions with `timeout_minutes=5`.
-   - Wait using `wait_pending_prompt(session_id, prompt_id, timeout_seconds=300, consume=true)`.
-   - Do one immediate final check via `check_pending_prompt(session_id, prompt_id, consume=true)` before fallback.
-   - If Telegram input tools are unavailable or fail, explicitly state the reason and fall back to one in-UI question (`request_user_input`).
+4. Question routing policy:
+   - Ask questions in-chat (UI) and use Telegram only to notify before asking.
+   - Reserve `error`/`attention_needed` for cases that require manual user attention.
 
 ---
 
@@ -304,29 +297,6 @@ Restart Cursor or Codex after installing the skill.
 | Tool | Description |
 |------|-------------|
 | `send_telegram_notification` | Send structured notification (event, message, task_name) |
-
-### High-Level Input Tools
-
-| Tool | Description |
-|------|-------------|
-| `ask_user_confirmation` | Yes/No inline keyboard with natural text fallback (`yes/no`, optional alias ref) |
-| `ask_user_choice` | Multiple-choice via inline keyboard or poll (`allow_custom_text=true` adds `Other` and forces inline) |
-
-### Low-Level Input Tools
-
-| Tool | Description |
-|------|-------------|
-| `check_pending_prompt` | Check status and consume resolved response |
-| `wait_pending_prompt` | Block until prompt is resolved/expired/cancelled or timeout |
-
-### Lifecycle Tools
-
-| Tool | Description |
-|------|-------------|
-| `telegram_listener_health` | Listener health diagnostics |
-| `start_telegram_listener` | Start the reply listener daemon |
-| `stop_telegram_listener` | Stop listener and reset runtime state |
-| `restart_telegram_listener` | Deterministic stop/start with health confirmation |
 
 ### Diagnostic Tools
 
@@ -339,21 +309,14 @@ Restart Cursor or Codex after installing the skill.
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | No notifications received | Bot token or chat ID wrong | Verify `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` |
-| Prompt stays "waiting" | Listener not running | Call `start_telegram_listener` or `restart_telegram_listener` |
-| "stale_lock" health reason | Previous listener crashed | Call `restart_telegram_listener` |
-| "heartbeat_stale" | Listener froze or network issue | Call `restart_telegram_listener` |
-| "token_conflict" health reason | Another client is polling `getUpdates` with same token | Stop competing consumer or use a separate bot token |
-| "start_backoff_active" | Listener recently failed to start repeatedly | Wait for backoff or call `restart_telegram_listener` after fixing root cause |
-| Prompt expired | User didn't respond in time | Increase `timeout_minutes` or re-ask |
-| Inline button not responding | Callback not matched | Ensure listener is running via `telegram_listener_health` |
+| Capability output shows more than 2 tools | Wrong branch/runtime | Use `feature/notify-only` and restart client |
 | `Client error for command spawn telegram-mcp-notify ENOENT` | Executable not installed or not on app PATH | Use `uvx --from git+https://github.com/hyper-tew/telegram-mcp-notify telegram-mcp-notify` in MCP config, or switch to `python -m telegram_mcp_notify.server` |
 | `Client error for command spawn uvx ENOENT` | `uv`/`uvx` is not installed or not on app PATH | Install `uv` and restart the app, or use the pip-based `python -m telegram_mcp_notify.server` configuration |
 
 ## Data Paths
 
 All data defaults to `~/.telegram-mcp-notify/`:
-- `inbox.db` -- SQLite inbox database
-- `listener.log` -- Listener log file
+- `listener.log` -- Server/log output
 - `locks/` -- Singleton lock files
 
 Override with environment variables: `TELEGRAM_INBOX_DB_PATH`, `TELEGRAM_LISTENER_LOG_PATH`, `TELEGRAM_SINGLETON_LOCK_DIR`.

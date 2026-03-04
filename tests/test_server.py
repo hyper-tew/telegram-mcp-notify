@@ -368,14 +368,6 @@ def test_parse_iso_handles_unexpected_parser_exception(monkeypatch) -> None:
 def test_telegram_notify_capabilities_exposes_only_target_tools() -> None:
     expected_tools = {
         "send_telegram_notification",
-        "ask_user_confirmation",
-        "ask_user_choice",
-        "check_pending_prompt",
-        "wait_pending_prompt",
-        "telegram_listener_health",
-        "start_telegram_listener",
-        "stop_telegram_listener",
-        "restart_telegram_listener",
         "telegram_notify_capabilities",
     }
     removed_tools = {
@@ -390,9 +382,13 @@ def test_telegram_notify_capabilities_exposes_only_target_tools() -> None:
     result = server.telegram_notify_capabilities()
     assert result["ok"] is True
     assert set(result["tools"]) == expected_tools
-    assert result["tool_count"] == 10
+    assert result["tool_count"] == 2
     assert removed_tools.isdisjoint(set(result["tools"]))
-    assert result["supports"]["sync_wait_for_prompt"] is True
+    assert result["supports"]["pending_prompts"] is False
+    assert result["supports"]["listener_lifecycle"] is False
+    assert result["supports"]["listener_stop_restart"] is False
+    assert result["supports"]["sync_wait_for_prompt"] is False
+    assert result["supports"]["custom_choice_text"] is False
 
 
 def test_stop_telegram_listener_uses_runtime_stop(monkeypatch, tmp_path) -> None:

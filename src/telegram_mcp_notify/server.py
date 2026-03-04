@@ -106,27 +106,13 @@ TERMINAL_PROMPT_STATUSES = {
 }
 
 _TOOL_GROUP_NOTIFICATION = ("send_telegram_notification",)
-_TOOL_GROUP_HIGH_LEVEL_INPUT = (
-    "ask_user_confirmation",
-    "ask_user_choice",
-)
-_TOOL_GROUP_LOW_LEVEL_INPUT = (
-    "check_pending_prompt",
-    "wait_pending_prompt",
-)
-_TOOL_GROUP_LIFECYCLE = (
-    "telegram_listener_health",
-    "start_telegram_listener",
-    "stop_telegram_listener",
-    "restart_telegram_listener",
-)
+_TOOL_GROUP_HIGH_LEVEL_INPUT: tuple[str, ...] = ()
+_TOOL_GROUP_LOW_LEVEL_INPUT: tuple[str, ...] = ()
+_TOOL_GROUP_LIFECYCLE: tuple[str, ...] = ()
 _TOOL_GROUP_DIAGNOSTICS = ("telegram_notify_capabilities",)
 
 EXPOSED_TOOL_NAMES = (
     *_TOOL_GROUP_NOTIFICATION,
-    *_TOOL_GROUP_HIGH_LEVEL_INPUT,
-    *_TOOL_GROUP_LOW_LEVEL_INPUT,
-    *_TOOL_GROUP_LIFECYCLE,
     *_TOOL_GROUP_DIAGNOSTICS,
 )
 
@@ -1332,10 +1318,6 @@ def _register_pending_prompt(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="check_pending_prompt",
-    description="Check pending prompt status and optionally consume a resolved response.",
-)
 def check_pending_prompt(
     session_id: str,
     prompt_id: str,
@@ -1388,10 +1370,6 @@ def check_pending_prompt(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="telegram_listener_health",
-    description="Return health for the Telegram reply listener daemon.",
-)
 def telegram_listener_health(
     db_path: str | None = None,
     include_log_tail: bool = False,
@@ -1414,10 +1392,6 @@ def telegram_listener_health(
         }
 
 
-@SERVER.tool(
-    name="start_telegram_listener",
-    description="Start the Telegram reply listener daemon if it is not already running.",
-)
 def start_telegram_listener(
     db_path: str | None = None,
     self_heal: bool = True,
@@ -1437,10 +1411,6 @@ def start_telegram_listener(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="stop_telegram_listener",
-    description="Stop the Telegram reply listener daemon and reset runtime state.",
-)
 def stop_telegram_listener(
     db_path: str | None = None,
     force: bool = False,
@@ -1464,10 +1434,6 @@ def stop_telegram_listener(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="restart_telegram_listener",
-    description="Deterministically restart the Telegram reply listener daemon with health confirmation.",
-)
 def restart_telegram_listener(
     db_path: str | None = None,
     reason: str | None = None,
@@ -1505,13 +1471,6 @@ def restart_telegram_listener(
 # ---------------------------------------------------------------------------
 
 
-@SERVER.tool(
-    name="ask_user_confirmation",
-    description=(
-        "Send a Yes/No confirmation question to the user via Telegram inline keyboard. "
-        "Returns the prompt_id for later checking with check_pending_prompt."
-    ),
-)
 def ask_user_confirmation(
     question: str,
     session_id: str,
@@ -1547,15 +1506,6 @@ def ask_user_confirmation(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="ask_user_choice",
-    description=(
-        "Send a multiple-choice question to the user via Telegram. "
-        "Uses inline keyboard for <=4 choices, poll for >4 (or set input_mode explicitly). "
-        "When allow_custom_text=true, includes an 'Other' option and accepts custom text replies. "
-        "Returns the prompt_id for later checking with check_pending_prompt."
-    ),
-)
 def ask_user_choice(
     question: str,
     choices: list[str],
@@ -1609,13 +1559,6 @@ def ask_user_choice(
         return {"ok": False, "error": str(exc)}
 
 
-@SERVER.tool(
-    name="wait_pending_prompt",
-    description=(
-        "Wait for a pending prompt to leave waiting status and return the latest prompt state. "
-        "Useful when the client wants a single blocking call instead of manual polling."
-    ),
-)
 def wait_pending_prompt(
     session_id: str,
     prompt_id: str,
@@ -1689,11 +1632,11 @@ def telegram_notify_capabilities() -> dict[str, Any]:
         },
         "supports": {
             "notifications": True,
-            "pending_prompts": True,
-            "listener_lifecycle": True,
-            "listener_stop_restart": True,
-            "sync_wait_for_prompt": True,
-            "custom_choice_text": True,
+            "pending_prompts": False,
+            "listener_lifecycle": False,
+            "listener_stop_restart": False,
+            "sync_wait_for_prompt": False,
+            "custom_choice_text": False,
         },
     }
 
